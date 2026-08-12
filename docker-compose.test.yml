@@ -1,0 +1,36 @@
+# Integration test harness
+#
+#   docker compose -f docker-compose.test.yml up -d
+#   DATABASE_URL="postgresql://app:app@localhost:5433/ecom_intel_test?schema=public" \
+#     npx prisma migrate deploy
+#   npm run test:integration
+#
+# Port 5433 deliberately, so this never collides with a local dev Postgres.
+# tmpfs storage: the DB is disposable and this makes the suite noticeably faster.
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: ecom_intel_test
+      # Event headlines contain → and — (see significance.ts / engine.ts). Pin
+      # the cluster's encoding explicitly rather than trusting the daemon's
+      # default locale — a differently-localed Docker host can otherwise hand
+      # you WIN1252/SQL_ASCII and event.createMany() dies on the first arrow.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    command: >
+      postgres
+      -c fsync=off
+      -c synchronous_commit=off
+      -c full_page_writes=off
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d ecom_intel_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

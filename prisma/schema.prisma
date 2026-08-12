@@ -1,0 +1,643 @@
+// Ecommerce Intelligence Engine — data model
+//
+// Design rules that must not be broken:
+//   1. `Event` is append-only and immutable. Never UPDATE, never DELETE.
+//   2. Events are computed at crawl time and persisted. Never derived at read time.
+//   3. `Product` holds CURRENT state (fast diffing: one query per store).
+//      `ProductStateSnapshot` holds history, written ONLY when something changed.
+//   4. Every write path is idempotent, keyed on (crawlId, dedupeKey).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Stores
+// ---------------------------------------------------------------------------
+
+enum Platform {
+  SHOPIFY
+  WOOCOMMERCE
+  BIGCOMMERCE
+  MAGENTO
+  CUSTOM
+  UNKNOWN
+}
+
+/// Crawl frequency tier. Driven by user attention, not by store size.
+enum CrawlTier {
+  HOT // on a paid user's watchlist        -> every 6-12h
+  WARM // searched within last 30 days      -> daily
+  COOL // searched at least once, ever      -> weekly
+  COLD // corpus-seeded, never searched     -> monthly
+  DORMANT // 3+ crawls with zero change        -> quarterly
+  DISABLED // dead domain / blocked / opted out  -> never
+}
+
+model Store {
+  id       String    @id @default(cuid())
+  domain   String    @unique // canonical: lowercase, no www, no protocol
+  platform Platform  @default(UNKNOWN)
+  tier     CrawlTier @default(COLD)
+
+  name         String?
+  currency     String? @db.VarChar(3)
+  countryCode  String? @db.VarChar(2)
+  themeName    String?
+  themeVersion String?
+
+  /// True once we have completed one successful full crawl.
+  /// Until then, diffing emits NO alertable events (see engine.ts baseline guard).
+  baselinedAt DateTime?
+  /// Same role as baselinedAt, for the independent marketing-intelligence
+  /// pipeline: null until the first successful MarketingCollectionRun, so
+  /// every ad found on that first check is persisted but does not fire a
+  /// flood of AD_DETECTED events for advertising that already existed.
+  marketingBaselinedAt DateTime?
+
+  firstSeenAt   DateTime  @default(now())
+  lastCrawledAt DateTime?
+  lastChangedAt DateTime?
+  nextCrawlAt   DateTime  @default(now())
+  /// Same claim mechanics as nextCrawlAt (FOR UPDATE SKIP LOCKED in
+  /// marketing/scheduler.ts) but on its own, much slower cadence — this
+  /// drives a paid external vendor, so it must never be conflated with or
+  /// derived from the free Shopify crawl schedule.
+  nextMarketingCollectionAt DateTime @default(now())
+
+  /// Consecutive crawls where catalogHash was unchanged. Drives DORMANT demotion.
+  unchangedStreak Int @default(0)
+  /// Consecutive failed crawls. Drives DISABLED demotion.
+  failureStreak   Int @default(0)
+
+  products                Product[]
+  entities                StoreEntity[]
+  crawls                  Crawl[]
+  events                  Event[]
+  watchers                Watchlist[]
+  analysisUsage           AnalysisUsage[]
+  adObservations          AdObservation[]
+  marketingCollectionRuns MarketingCollectionRun[]
+  stats                   StoreStats?
+
+  @@index([tier, nextCrawlAt])
+  @@index([platform])
+}
+
+/// Rolling behavioural stats. Used by the significance scorer for the RARITY term:
+/// a price change at a store that never changes prices matters far more than one
+/// at a store that reprices every day.
+model StoreStats {
+  storeId String @id
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  windowDays Int @default(30)
+
+  priceChangesInWindow    Int @default(0)
+  productsAddedInWindow   Int @default(0)
+  productsRemovedInWindow Int @default(0)
+  crawlsInWindow          Int @default(0)
+
+  /// Cached medians so the scorer never has to aggregate at read time.
+  medianPriceCents Int?
+  productCount     Int  @default(0)
+
+  computedAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Crawls
+// ---------------------------------------------------------------------------
+
+enum CrawlStatus {
+  RUNNING
+  OK
+  PARTIAL // some pages failed — additions are trusted, removals are NOT
+  FAILED
+  BLOCKED
+}
+
+/// MANUAL: a user submitted a URL (POST /api/analyze). SCHEDULED: the
+/// monitoring scheduler claimed a due store. Purely observability — nothing
+/// in the diff engine or persistence path treats these differently.
+enum CrawlTrigger {
+  MANUAL
+  SCHEDULED
+}
+
+model Crawl {
+  id      String       @id @default(cuid())
+  storeId String
+  store   Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  trigger CrawlTrigger @default(MANUAL)
+
+  status     CrawlStatus @default(RUNNING)
+  startedAt  DateTime    @default(now())
+  finishedAt DateTime?
+
+  /// Hash of the normalized catalog EXCLUDING volatile ordering fields.
+  /// If unchanged vs. previous crawl, the entire product diff is skipped.
+  catalogHash String? @db.VarChar(64)
+  /// Separate hash for bestseller ordering. Changes almost daily, so it is kept
+  /// out of catalogHash to preserve the short-circuit.
+  rankHash    String? @db.VarChar(64)
+  techHash    String? @db.VarChar(64)
+
+  pagesExpected Int?
+  pagesFetched  Int?
+  productCount  Int?
+  httpErrors    Int     @default(0)
+  durationMs    Int?
+  errorMessage  String?
+
+  events    Event[]
+  snapshots ProductStateSnapshot[]
+
+  @@index([storeId, startedAt(sort: Desc)])
+}
+
+// ---------------------------------------------------------------------------
+// Products — current state
+// ---------------------------------------------------------------------------
+
+enum ProductStatus {
+  ACTIVE
+  MISSING // absent from last crawl(s), not yet confirmed gone
+  REMOVED // confirmed after N consecutive absences
+}
+
+model Product {
+  id      String @id @default(cuid())
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  /// Shopify product id as string. Stable across handle/title renames.
+  externalId  String
+  handle      String
+  title       String
+  vendor      String?
+  productType String?
+  tags        String[]
+
+  /// Shopify's own created_at. Lets us reconstruct a launch timeline
+  /// retroactively from a single first crawl.
+  sourceCreatedAt DateTime?
+
+  status        ProductStatus @default(ACTIVE)
+  firstSeenAt   DateTime      @default(now())
+  lastSeenAt    DateTime      @default(now())
+  missingSince  DateTime?
+  /// Consecutive successful crawls in which this product was absent.
+  missingStreak Int           @default(0)
+
+  // --- current state (denormalized for single-query diffing) ---
+  priceMinCents     Int
+  priceMaxCents     Int
+  compareAtMaxCents Int?
+  variantCount      Int     @default(0)
+  availableVariants Int     @default(0)
+  bestsellerRank    Int?
+  imageHash         String? @db.VarChar(32) // perceptual hash, for cross-store matching
+
+  snapshots      ProductStateSnapshot[]
+  adObservations AdObservation[]
+
+  @@unique([storeId, externalId])
+  @@index([storeId, status])
+  @@index([imageHash])
+}
+
+/// Append-only. One row per product PER CHANGE — not per crawl.
+/// This is what makes price-history charts cheap and storage sane.
+model ProductStateSnapshot {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  crawlId   String
+  crawl     Crawl   @relation(fields: [crawlId], references: [id], onDelete: Cascade)
+
+  capturedAt        DateTime @default(now())
+  priceMinCents     Int
+  priceMaxCents     Int
+  compareAtMaxCents Int?
+  variantCount      Int
+  availableVariants Int
+  bestsellerRank    Int?
+
+  @@index([productId, capturedAt(sort: Desc)])
+}
+
+// ---------------------------------------------------------------------------
+// Store entities — apps, pixels, collections, payment providers
+//
+// Same shape as Product for the same reason: a named thing that appears,
+// persists, and disappears goes through the same ACTIVE -> MISSING -> REMOVED
+// state machine (see diffEntitySet() in engine). Columns on Store can't give
+// you a dated "installed Klaviyo on 14 March" or a reverse lookup across the
+// whole corpus ("which stores use Zipify OCU") — a table can, for free.
+// ---------------------------------------------------------------------------
+
+enum StoreEntityKind {
+  APP
+  PIXEL
+  COLLECTION
+  PAYMENT_PROVIDER
+  /// Reserved — not yet populated. emailPlatform is a scalar ("which ESP, if
+  /// any"), not set membership, so it doesn't fit diffEntitySet() as-is.
+  EMAIL_PLATFORM
+}
+
+model StoreEntity {
+  id      String @id @default(cuid())
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  kind StoreEntityKind
+  /// Natural key within (storeId, kind): app slug, pixel platform, collection handle.
+  key  String
+  /// Extra data that isn't part of identity: pixel ID, theme/app version.
+  meta Json?
+
+  status        ProductStatus @default(ACTIVE)
+  firstSeenAt   DateTime      @default(now())
+  lastSeenAt    DateTime      @default(now())
+  missingSince  DateTime?
+  /// Consecutive successful crawls in which this entity was absent.
+  missingStreak Int           @default(0)
+
+  @@unique([storeId, kind, key])
+  @@index([storeId, kind, status])
+  /// Reverse lookup across the whole corpus: "which stores use Zipify OCU".
+  @@index([kind, key])
+}
+
+// ---------------------------------------------------------------------------
+// Events — the heart of the product
+// ---------------------------------------------------------------------------
+
+enum EventType {
+  STORE_BASELINED
+  PRODUCT_ADDED
+  PRODUCT_REMOVED
+  PRODUCT_RESTORED
+  PRICE_DROP
+  PRICE_INCREASE
+  SALE_STARTED
+  SALE_ENDED
+  PRODUCT_SOLD_OUT
+  PRODUCT_RESTOCKED
+  VARIANT_SOLD_OUT
+  BESTSELLER_ENTERED
+  BESTSELLER_CLIMBED
+  BESTSELLER_DROPPED
+  COLLECTION_ADDED
+  COLLECTION_REMOVED
+  THEME_CHANGED
+  APP_ADDED
+  APP_REMOVED
+  PIXEL_ADDED
+  PIXEL_REMOVED
+  PAYMENT_PROVIDER_ADDED
+  PAYMENT_PROVIDER_REMOVED
+  AD_DETECTED
+  AD_REMOVED
+  AD_CHANGED
+  PRODUCT_AD_MATCHED
+}
+
+enum EntityType {
+  STORE
+  PRODUCT
+  VARIANT
+  COLLECTION
+  TECH
+  AD
+}
+
+model Event {
+  id      String  @id @default(cuid())
+  storeId String
+  store   Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  /// Null for events not produced by a Shopify crawl (e.g. Marketing
+  /// Intelligence events — see AdObservation). Every existing Shopify-crawl
+  /// code path still always supplies a real crawlId; this was widened, not
+  /// repurposed.
+  crawlId String?
+  crawl   Crawl?  @relation(fields: [crawlId], references: [id], onDelete: Cascade)
+
+  entityType EntityType
+  /// Stable natural key of the subject: product externalId, collection handle, app slug…
+  entityKey  String
+  eventType  EventType
+
+  oldValue Json?
+  newValue Json?
+
+  /// 0..100. Computed at write time by significance.ts. Never recomputed.
+  significance Int
+  /// Human-readable, precomputed so the digest renderer does zero work.
+  headline     String
+
+  /// True for events reconstructed from source timestamps or Wayback at baseline.
+  /// Backfilled events power charts but MUST NOT trigger alerts.
+  backfilled Boolean @default(false)
+
+  /// Idempotency key. Re-running a crawl cannot duplicate events.
+  dedupeKey String
+
+  detectedAt DateTime @default(now())
+  /// When the event actually happened, if known (backfill). Defaults to detectedAt.
+  occurredAt DateTime @default(now())
+
+  @@unique([dedupeKey])
+  @@index([storeId, occurredAt(sort: Desc)])
+  @@index([storeId, significance(sort: Desc), occurredAt(sort: Desc)])
+  @@index([eventType, occurredAt(sort: Desc)])
+  /// Bounded per-product lifecycle lookups (Milestone 5B: persistence gap
+  /// reconstruction, bestseller rank trajectory) — without this, a query
+  /// scoped to one product's PRODUCT_REMOVED/RESTORED history only has the
+  /// (storeId, occurredAt) prefix to work with and must filter entityKey
+  /// out of every row in the time range, not just this product's rows.
+  @@index([storeId, entityType, entityKey, occurredAt(sort: Desc)])
+}
+
+// ---------------------------------------------------------------------------
+// Users, auth identities, and watchlists
+//
+// Auth model shape (User/Account/Session/VerificationToken) follows the
+// standard Auth.js Prisma-adapter convention verbatim — do not rename these
+// fields, the adapter reads/writes them by exact name.
+// ---------------------------------------------------------------------------
+
+/// Source of truth for plan-gated behavior. Nothing outside
+/// src/lib/entitlements/ should ever compare this directly — go through
+/// EntitlementService.hasCapability() instead.
+enum PlanTier {
+  FREE
+  /// The paid tier introduced in Milestone 3 Sub-phase C: unlimited
+  /// analyses, up to 20 active monitors, continuous (non-expiring)
+  /// monitoring. Renamed from PRO (Sub-phase A never actually granted
+  /// PRO to any user — no billing exists yet — so this rename carries
+  /// no live data).
+  BASIC
+  BUSINESS
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+  /// Null for OAuth-only users. Set only via the Credentials provider's
+  /// signup path, hashed with bcrypt — never stored or logged raw.
+  passwordHash  String?
+  plan          PlanTier  @default(FREE)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+  watchlists    Watchlist[]
+  analysisUsage AnalysisUsage[]
+}
+
+/// One row per linked OAuth identity (Google, Facebook, ...). A single User
+/// can have multiple Accounts; this is the "identity/account relationship"
+/// that keeps sign-in-with-Google and sign-in-with-Facebook from ever
+/// silently creating two Users for the same person.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+/// DB-backed sessions (not JWT) — chosen so a session can be revoked
+/// server-side (sign-out-everywhere, account compromise) without waiting
+/// for a token to expire.
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expires      DateTime
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+enum WatchStatus {
+  ACTIVE
+  EXPIRED
+  REMOVED
+}
+
+/// The per-user monitoring relationship (spec: "StoreWatch"). Deliberately
+/// extends the pre-existing Watchlist model rather than introducing a
+/// competing one — same (userId, storeId) shape it already had.
+/// monitoringStartedAt/ExpiresAt/Status are the monitoring mechanism;
+/// Store.tier (global, shared) is promoted to HOT while this is ACTIVE and
+/// demoted back to COLD once no ACTIVE watch remains for that store, via
+/// recomputeStoreTier() in monitoring/watch.ts.
+///
+/// How many ACTIVE rows a single userId may have is plan-dependent (FREE:
+/// 1, BASIC: 20) — see entitlements/plan-limits.ts — so it's enforced
+/// entirely in the service layer (advisory-lock + COUNT, same pattern as
+/// AnalysisUsage's "at most N" check), not by a DB constraint: a unique
+/// index can express "at most one," never "at most N." An earlier
+/// migration added a partial unique index assuming FREE's N=1 was
+/// universal; it was dropped once BASIC needed N=20 — see
+/// 20260811_basic_plan_and_unlimited_watch/migration.sql.
+///
+/// monitoringExpiresAt is null for BASIC's continuous monitoring (no fixed
+/// end date) — expireDueWatches()'s SQL comparison against NULL naturally
+/// never matches, so a null-expiry watch is simply never swept.
+model Watchlist {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  addedAt        DateTime  @default(now())
+  /// Minimum significance required to send a real-time alert. Everything
+  /// below this still lands in the weekly digest. Unused until the alerts
+  /// feature (explicitly out of scope this milestone) ships.
+  alertThreshold Int       @default(60)
+  lastDigestAt   DateTime?
+
+  monitoringStartedAt DateTime?
+  monitoringExpiresAt DateTime?
+  monitoringStatus    WatchStatus @default(ACTIVE)
+
+  @@unique([userId, storeId])
+  @@index([storeId])
+  @@index([userId, monitoringStatus])
+  @@index([monitoringStatus, monitoringExpiresAt])
+}
+
+/// The server-side usage ledger for the free-tier "3 unique stores" limit.
+/// One row per (userId, storeId) ever analyzed — re-analyzing the same
+/// canonical store is a no-op against this table (unique constraint), and
+/// "how many unique stores has this user analyzed" is just a COUNT of it.
+/// Never trust a client-supplied count; this table is the only source of
+/// truth. See recordAnalysisUsage() in src/lib/entitlements/ for the
+/// advisory-lock pattern that keeps concurrent requests from a user with
+/// one credit left from consuming two.
+model AnalysisUsage {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storeId   String
+  store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, storeId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Marketing intelligence — Google advertising (Milestone 4 Sub-phase B)
+//
+// Store-scoped, never User-scoped: one shared dataset per store regardless
+// of how many users watch/analyze it. Kept as a separate pipeline from the
+// Shopify crawler (see MarketingCollectionRun, the Crawl-vs-Product
+// equivalent for this domain: an individual AdObservation row cannot
+// represent "we tried and failed to check").
+//
+// Vendor-agnostic by design (AdPlatform currently has one member, GOOGLE)
+// so a future Meta source is additive, not a rewrite.
+// ---------------------------------------------------------------------------
+
+enum AdPlatform {
+  GOOGLE
+}
+
+/// Outcome of one collection attempt against the vendor. Never conflated with
+/// "no ads found" — see MarketingCollectionRun.reason and the AdObservation
+/// absence policy below.
+enum MarketingCollectionOutcome {
+  SUCCESS
+  UNAVAILABLE
+}
+
+/// One row per collection attempt, successful or not. Exists specifically so
+/// a failed/unavailable check is a recorded fact, never silently absent —
+/// mirrors the existing Crawl model's role for the Shopify pipeline.
+model MarketingCollectionRun {
+  id       String     @id @default(cuid())
+  storeId  String
+  store    Store      @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  platform AdPlatform
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  outcome MarketingCollectionOutcome?
+  /// Set only when outcome = UNAVAILABLE. Distinguishes e.g. "vendor
+  /// unavailable" from "advertiser identification unavailable" — never
+  /// collapsed into a single generic failure string.
+  reason  String?
+
+  /// Set only when outcome = SUCCESS.
+  adsObserved        Int?
+  vendorRequestCount Int  @default(0)
+
+  @@index([storeId, platform, startedAt(sort: Desc)])
+}
+
+/// ACTIVE_EVIDENCE: the most recent successful check still returned this ad.
+/// HISTORICAL: confirmed absent per the absence policy (missingStreak
+/// threshold reached on successful checks — never on a failed/unavailable
+/// run). Mirrors StoreEntity's ACTIVE -> MISSING -> REMOVED shape, collapsed
+/// to two states because a single-poll "missing" is not yet meaningful here.
+enum AdObservationStatus {
+  ACTIVE_EVIDENCE
+  HISTORICAL
+}
+
+/// How matchedProduct was derived. Deterministic only — no AI/embeddings/
+/// fuzzy matching. Exact URL match against the store's own product catalog
+/// path. (Collection-page destination URLs are deliberately not modeled as
+/// a "match" — AdObservation only has a Product FK, and inventing a second
+/// matched-entity shape for collections isn't justified without a concrete
+/// use case. Such an ad is simply left unmatched.)
+enum MatchMethod {
+  EXACT_PRODUCT_URL
+}
+
+enum MatchConfidence {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+/// One row per distinct ad, identified by the vendor's own stable
+/// externalAdId — NEVER by destination URL alone (multiple ads can point to
+/// the same product). Append-only current-state table, same role as Product:
+/// history of what changed lives in Event, not here.
+model AdObservation {
+  id       String     @id @default(cuid())
+  storeId  String
+  store    Store      @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  platform AdPlatform
+
+  /// Vendor's stable ad/creative ID. The real identity key for dedup —
+  /// destination URL is explicitly not used for identity.
+  externalAdId         String
+  advertiserExternalId String?
+  advertiserName       String?
+  destinationUrl       String?
+  /// Free text ("text" | "image" | "video") — vendor-supplied, not modeled
+  /// as an enum since the vendor's own vocabulary may grow.
+  format               String?
+
+  status        AdObservationStatus @default(ACTIVE_EVIDENCE)
+  /// Consecutive successful checks in which this ad was absent. Never
+  /// incremented on a failed/unavailable MarketingCollectionRun.
+  missingStreak Int                 @default(0)
+
+  matchedProductId String?
+  matchedProduct   Product?         @relation(fields: [matchedProductId], references: [id], onDelete: SetNull)
+  matchMethod      MatchMethod?
+  matchConfidence  MatchConfidence?
+
+  firstSeenAt DateTime
+  lastSeenAt  DateTime
+
+  /// e.g. "SERPAPI_GOOGLE_ADS_TRANSPARENCY_CENTER" — which vendor/endpoint
+  /// produced this row. Free text, not an enum: new vendors under the same
+  /// AdPlatform shouldn't require a migration.
+  source         String
+  sourceMetadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([storeId, platform, externalAdId])
+  @@index([storeId, status])
+  @@index([matchedProductId])
+}

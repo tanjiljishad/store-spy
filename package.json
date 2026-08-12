@@ -1,0 +1,52 @@
+{
+  "name": "ecommerce-intelligence-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "prisma:generate": "prisma generate",
+    "test": "vitest run",
+    "test:integration": "dotenv -e .env.test -- vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx scripts/smoke.ts",
+    "scheduler:tick": "tsx scripts/scheduler-tick.ts",
+    "marketing-scheduler:tick": "tsx scripts/marketing-scheduler-tick.ts",
+    "dev:set-plan": "tsx scripts/set-user-plan.ts",
+    "verify:sql": "dotenv -e .env.test -- tsx scripts/verify-sql.ts",
+    "db:test:up": "docker compose -f docker-compose.test.yml up -d --wait",
+    "db:test:down": "docker compose -f docker-compose.test.yml down -v",
+    "db:test:migrate": "dotenv -e .env.test -- prisma migrate deploy"
+  },
+  "dependencies": {
+    "@auth/prisma-adapter": "^2.11.3",
+    "@prisma/client": "^5.20.0",
+    "bcryptjs": "^3.0.3",
+    "ipaddr.js": "^2.5.0",
+    "next": "^16.3.0",
+    "next-auth": "^5.0.0-beta.32",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20.14.0",
+    "@types/pg": "^8.21.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "dotenv-cli": "^11.0.0",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.0",
+    "pg": "^8.23.0",
+    "postcss": "^8.5.26",
+    "prisma": "^5.20.0",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

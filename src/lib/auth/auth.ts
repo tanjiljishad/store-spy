@@ -1,0 +1,113 @@
+import NextAuth from "next-auth";
+import type { Provider } from "next-auth/providers";
+import Credentials from "next-auth/providers/credentials";
+import Facebook from "next-auth/providers/facebook";
+import Google from "next-auth/providers/google";
+import { PrismaAdapter } from "@auth/prisma-adapter";
+import { prisma } from "../db/prisma";
+import { verifyCredentials } from "./verify-credentials";
+
+/**
+ * Auth.js v5, three providers unified onto the one Prisma `User` model via
+ * `PrismaAdapter` (OAuth identities live in `Account`, never a second User
+ * row for the same person).
+ *
+ * Session strategy is JWT, not database, for a specific reason: Auth.js's
+ * Credentials provider is documented as incompatible with database
+ * sessions — a Credentials sign-in doesn't go through the adapter's
+ * account-linking path the way an OAuth sign-in does, so there is no
+ * adapter-managed Session row to create for it. Since this app requires
+ * both Credentials and OAuth, JWT is the only configuration that supports
+ * all three uniformly. The real cost: no instant server-side "sign out
+ * everywhere" (a JWT is valid until it expires, not until revoked) — see
+ * AGENTS.md / the Milestone 3 report for why that tradeoff was accepted.
+ *
+ * Google/Facebook are only registered when their env vars are present, so
+ * a deployment (or this sandbox) without OAuth app credentials still gets
+ * a fully working Credentials flow instead of a boot-time crash.
+ */
+
+const providers: Provider[] = [
+  Credentials({
+    id: "credentials",
+    name: "Email and password",
+    credentials: {
+      email: { label: "Email", type: "email" },
+      password: { label: "Password", type: "password" },
+    },
+    async authorize(credentials) {
+      const email = typeof credentials?.email === "string" ? credentials.email : null;
+      const password = typeof credentials?.password === "string" ? credentials.password : null;
+      if (!email || !password) return null;
+      return verifyCredentials(prisma, email, password);
+    },
+  }),
+];
+
+/**
+ * Single source of truth for "is this provider actually configured" —
+ * read by the providers array below AND by the /login and /signup Server
+ * Components (getConfiguredProviders()) so the UI never renders a
+ * "Continue with Google" button that would 500 on click. getProviders()
+ * from next-auth/react does a relative fetch() internally, which isn't
+ * reliable from a Server Component during SSR — this sidesteps that
+ * entirely by checking the same env vars auth.ts itself gates on.
+ */
+export const configuredProviders = {
+  google: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
+  facebook: Boolean(process.env.FACEBOOK_CLIENT_ID && process.env.FACEBOOK_CLIENT_SECRET),
+};
+
+if (configuredProviders.google) {
+  providers.push(
+    Google({
+      clientId: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    }),
+  );
+}
+
+if (configuredProviders.facebook) {
+  providers.push(
+    Facebook({
+      clientId: process.env.FACEBOOK_CLIENT_ID!,
+      clientSecret: process.env.FACEBOOK_CLIENT_SECRET!,
+    }),
+  );
+}
+
+export const { handlers, auth, signIn, signOut } = NextAuth({
+  adapter: PrismaAdapter(prisma),
+  session: { strategy: "jwt" },
+  providers,
+  pages: { signIn: "/login" },
+  // Deliberately NOT enabling allowDangerousEmailAccountLinking: a
+  // Credentials account and an OAuth account that happen to share an email
+  // are kept separate unless a user explicitly links them from a signed-in
+  // session (not built this milestone) — silently merging on email match
+  // alone is exactly the "unsafe automatic linking" the spec says not to
+  // build.
+  callbacks: {
+    async jwt({ token, user }) {
+      if (user) {
+        token.id = user.id;
+      }
+      if (token.id) {
+        // Plan can change between logins; re-read it each time a fresh
+        // user object isn't available so a stale JWT doesn't pin a user
+        // to a plan they've since left. Session lookups are cheap and
+        // infrequent relative to page views.
+        const dbUser = await prisma.user.findUnique({ where: { id: token.id as string }, select: { plan: true } });
+        token.plan = dbUser?.plan ?? "FREE";
+      }
+      return token;
+    },
+    async session({ session, token }) {
+      if (session.user && token.id) {
+        session.user.id = token.id as string;
+        session.user.plan = (token.plan as string) ?? "FREE";
+      }
+      return session;
+    },
+  },
+});
