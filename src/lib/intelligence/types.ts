@@ -5,6 +5,7 @@ import type { GrowthSignal } from "../monitoring/activity";
 import type { CatalogTrendResult } from "../growth/catalog";
 import type { ProductHighlight } from "../growth/report";
 import type { ReviewInfrastructureEntry } from "../growth/review-infrastructure";
+import type { ReviewCoverageSummary } from "../reviews/signal";
 import type { MarketingReport } from "../marketing/report";
 
 /**
@@ -47,6 +48,10 @@ export interface StoreIdentitySection {
   domain: string;
   platform: "shopify";
   theme: IntelligenceField<{ name: string | null; version: string | null }>;
+  /** RDAP-derived, looked up once — see lib/enrichment/domain-age.ts. */
+  domainRegisteredAt: IntelligenceField<{ registeredAt: string }>;
+  /** Earliest Wayback Machine snapshot of this store's /products.json — see lib/enrichment/domain-age.ts. */
+  firstArchivedAt: IntelligenceField<{ firstArchivedAt: string }>;
 }
 
 export interface TechnologySection {
@@ -66,6 +71,7 @@ export interface GrowthSection {
   productsAdded: number;
   productsRemoved: number;
   productsRestored: number;
+  priceChanges: number;
   productCountDelta: number | null;
   currentProductCount: number;
   hasEnoughHistory: boolean;
@@ -88,6 +94,16 @@ export interface ReviewsSection {
    * today is UNAVAILABLE — see report.ts's asPermanentlyUnavailable().
    */
   velocity: IntelligenceField<{ reviewsPerMonth: number }>;
+  /**
+   * Milestone 9 Sub-phase E — bounded storefront JSON-LD review-count
+   * SAMPLE coverage (growth/report.ts's reviewCoverage, passed through
+   * unchanged). Deliberately separate from `velocity` above: this reports
+   * how many of the products actually sampled this crawl exposed a count,
+   * never a rate, a total, or anything resembling sales/revenue. See
+   * reviews/signal.ts's own doc comment for why a store-wide total is
+   * never computed here.
+   */
+  coverage: ReviewCoverageSummary;
 }
 
 export interface CommercialSection {

@@ -105,8 +105,18 @@ describe(`marketing pipeline stays correct under a non-UTC session timezone (${P
   });
 
   it("claiming pushes nextMarketingCollectionAt far enough forward that an immediate second claim doesn't re-claim it", async () => {
+    // Explicit backdated nextMarketingCollectionAt, not the bare
+    // @default(now()) — matching the sibling "due/not-due boundary" test
+    // above. See the identical fix/rationale in
+    // monitoring/__tests__/timezone-safety.integration.test.ts.
     await prisma.store.create({
-      data: { domain: "tz-marketing-claimed-once.com", platform: "SHOPIFY", tier: "WARM", baselinedAt: NOW },
+      data: {
+        domain: "tz-marketing-claimed-once.com",
+        platform: "SHOPIFY",
+        tier: "WARM",
+        baselinedAt: NOW,
+        nextMarketingCollectionAt: new Date(Date.now() - 1000),
+      },
     });
 
     const first = await claimDueStoresForMarketing(prisma, new Date(), 10);

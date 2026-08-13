@@ -33,27 +33,38 @@ interface MarketingReport {
   ads: ObservedField<AdView[]> | UnavailableField;
   lastCheckedAt: string | null;
   activity: MarketingActivitySummary | null;
-  productMatching: UnavailableField;
 }
 
 export interface AdvertisingSummaryProps {
   domain: string;
+  /**
+   * Sub-phase D: the dashboard Store Intelligence page's server component
+   * already computes this exact data (report.marketing) via the
+   * intelligence composer on every render — pass it here to skip the
+   * redundant client-side /marketing round trip entirely. Omit it
+   * (FullReportView.tsx's SSE analyze-result path has no server-composed
+   * report to seed from) to keep the original fetch-on-mount behavior,
+   * unchanged.
+   */
+  initialData?: MarketingReport;
 }
 
 /**
  * Fetches real marketing intelligence from /api/store/[domain]/marketing —
  * every number here is a live query against AdObservation/MarketingCollectionRun
- * /Event, never fabricated. Deterministic exact-URL product matching is a
- * verified non-capability of the current data source (Sub-phase D live
- * testing) — this component never implies otherwise; productMatching
- * renders through the same IntelligenceCard "Unavailable" state as any
- * other not-yet-supported field, with its real reason, not a special case.
+ * /Event, never fabricated. Ad spend, impressions, conversions, and
+ * product-level matching have no validated data source and never will
+ * under the current vendor (SerpApi's Ads Transparency Center exposes none
+ * of them) — those cards were removed entirely rather than shown as
+ * permanently-empty "Unavailable" placeholders, which read as broken, not
+ * as honest.
  */
-export function AdvertisingSummary({ domain }: AdvertisingSummaryProps) {
-  const [data, setData] = useState<MarketingReport | null>(null);
+export function AdvertisingSummary({ domain, initialData }: AdvertisingSummaryProps) {
+  const [data, setData] = useState<MarketingReport | null>(initialData ?? null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    if (initialData) return; // already have it — no network request at all
     let cancelled = false;
     fetch(`/api/store/${encodeURIComponent(domain)}/marketing`)
       .then((r) => (r.ok ? (r.json() as Promise<MarketingReport>) : Promise.reject(new Error(String(r.status)))))
@@ -66,7 +77,7 @@ export function AdvertisingSummary({ domain }: AdvertisingSummaryProps) {
     return () => {
       cancelled = true;
     };
-  }, [domain]);
+  }, [domain, initialData]);
 
   if (failed) return null;
   if (!data) {
@@ -79,9 +90,8 @@ export function AdvertisingSummary({ domain }: AdvertisingSummaryProps) {
 
   return (
     <div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <IntelligenceCard label="Ads observed" field={adsObservedField} format={(v) => v.toLocaleString("en-US")} />
-        <IntelligenceCard label="Product matching" field={data.productMatching} format={() => ""} />
         <div className="rounded-xl border border-line-soft bg-surface p-5">
           <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-dim">Last checked</span>
           <div className="mt-3.5 font-display text-lg font-bold tracking-tight">

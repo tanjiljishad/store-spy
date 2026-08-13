@@ -80,32 +80,7 @@ export interface MarketingReport {
    * detected/removed counts are meaningful — see activity.ts.
    */
   activity: MarketingActivitySummary | null;
-  /**
-   * Sub-phase D verified, live, across every ad format tested: SerpApi's
-   * Google Ads Transparency Center API does not return a destination/
-   * landing-page URL. Deterministic exact-URL product matching therefore
-   * cannot be claimed as a working capability right now — this field says
-   * so explicitly, once, rather than letting every ad's silently-null
-   * matchedProduct imply "we checked this specific ad and it didn't match."
-   * Always UNAVAILABLE until a data source that discloses destination URLs
-   * is validated — see docs/milestone-4-subphase-d-completion-report.md.
-   */
-  productMatching: UnavailableField;
-  /** Reserved shape for a future validated data source. Always UNAVAILABLE — no source for this exists today. */
-  adSpend: UnavailableField;
-  /** Reserved shape for a future validated data source. Always UNAVAILABLE — no source for this exists today. */
-  impressions: UnavailableField;
-  /** Reserved shape for a future validated data source. Always UNAVAILABLE — no source for this exists today. */
-  conversions: UnavailableField;
 }
-
-// Sub-phase E: single, explicit reasons — stated once at the top level
-// rather than implied per-ad. See MarketingReport's field-level doc comments.
-const PRODUCT_MATCHING_UNAVAILABLE_REASON =
-  "Product-level matching unavailable from the current advertising data source.";
-const AD_SPEND_UNAVAILABLE_REASON = "No validated ad-spend data source is available.";
-const IMPRESSIONS_UNAVAILABLE_REASON = "No validated impressions data source is available.";
-const CONVERSIONS_UNAVAILABLE_REASON = "No validated conversion data source is available.";
 
 export async function buildMarketingReport(
   prisma: PrismaClient,
@@ -127,10 +102,6 @@ export async function buildMarketingReport(
       ads: unavailable(lastRun ? "Advertising check did not complete" : "Advertising data has not been checked yet"),
       lastCheckedAt: null,
       activity: null,
-      productMatching: unavailable(PRODUCT_MATCHING_UNAVAILABLE_REASON),
-      adSpend: unavailable(AD_SPEND_UNAVAILABLE_REASON),
-      impressions: unavailable(IMPRESSIONS_UNAVAILABLE_REASON),
-      conversions: unavailable(CONVERSIONS_UNAVAILABLE_REASON),
     };
   }
 
@@ -141,10 +112,6 @@ export async function buildMarketingReport(
       ads: unavailable(lastRun.reason ?? "Advertising data could not be checked"),
       lastCheckedAt: lastRun.finishedAt?.toISOString() ?? null,
       activity: null,
-      productMatching: unavailable(PRODUCT_MATCHING_UNAVAILABLE_REASON),
-      adSpend: unavailable(AD_SPEND_UNAVAILABLE_REASON),
-      impressions: unavailable(IMPRESSIONS_UNAVAILABLE_REASON),
-      conversions: unavailable(CONVERSIONS_UNAVAILABLE_REASON),
     };
   }
 
@@ -171,10 +138,6 @@ export async function buildMarketingReport(
     domain,
     platform: "GOOGLE",
     activity,
-    productMatching: unavailable(PRODUCT_MATCHING_UNAVAILABLE_REASON),
-    adSpend: unavailable(AD_SPEND_UNAVAILABLE_REASON),
-    impressions: unavailable(IMPRESSIONS_UNAVAILABLE_REASON),
-    conversions: unavailable(CONVERSIONS_UNAVAILABLE_REASON),
     ads: observed(
       ads.map((a) => ({
         externalAdId: a.externalAdId,

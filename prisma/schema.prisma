@@ -75,6 +75,21 @@ model Store {
   /// Consecutive failed crawls. Drives DISABLED demotion.
   failureStreak   Int @default(0)
 
+  /// RDAP-derived domain registration date (see lib/enrichment/domain-age.ts)
+  /// — looked up once and cached forever, since a domain's registration date
+  /// never changes. Null until the lookup has been attempted or found nothing.
+  domainRegisteredAt DateTime?
+  /// Earliest Wayback Machine snapshot date found for this domain's
+  /// /products.json, looked up alongside domainRegisteredAt. Null until
+  /// attempted or found nothing.
+  firstArchivedAt DateTime?
+  /// Set the first time the enrichment lookups above are attempted, whether
+  /// or not they found anything — distinguishes "never tried" (null) from
+  /// "tried, found nothing" (set, fields above still null), so a store whose
+  /// registrar redacts RDAP data or has no Wayback history isn't retried on
+  /// every crawl.
+  domainAgeCheckedAt DateTime?
+
   products                Product[]
   entities                StoreEntity[]
   crawls                  Crawl[]
@@ -155,8 +170,9 @@ model Crawl {
   durationMs    Int?
   errorMessage  String?
 
-  events    Event[]
-  snapshots ProductStateSnapshot[]
+  events             Event[]
+  snapshots          ProductStateSnapshot[]
+  reviewObservations StorefrontReviewObservation[]
 
   @@index([storeId, startedAt(sort: Desc)])
 }
@@ -204,8 +220,9 @@ model Product {
   bestsellerRank    Int?
   imageHash         String? @db.VarChar(32) // perceptual hash, for cross-store matching
 
-  snapshots      ProductStateSnapshot[]
-  adObservations AdObservation[]
+  snapshots          ProductStateSnapshot[]
+  adObservations     AdObservation[]
+  reviewObservations StorefrontReviewObservation[]
 
   @@unique([storeId, externalId])
   @@index([storeId, status])
@@ -230,6 +247,59 @@ model ProductStateSnapshot {
   bestsellerRank    Int?
 
   @@index([productId, capturedAt(sort: Desc)])
+}
+
+/// Bounded, per-product review-count observation from public storefront
+/// JSON-LD (Milestone 9 Sub-phase E) — never from a review-provider API; see
+/// docs/milestone-9-subphase-b-completion-report.md for why that route
+/// remains blocked (Okendo's Terms of Service). Deliberately a separate
+/// table from ProductStateSnapshot: that one is written for every ACTIVE
+/// product on every crawl with a change, while this is written only for a
+/// small, bounded, provider-aware SAMPLE of products per crawl (see
+/// reviews/sampling.ts) — a fundamentally different collection cadence that
+/// would leave most ProductStateSnapshot rows null if merged into it.
+model StorefrontReviewObservation {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  crawlId   String
+  crawl     Crawl   @relation(fields: [crawlId], references: [id], onDelete: Cascade)
+
+  /// Null means "this product's page was sampled and fetched successfully,
+  /// but no usable review count was found in its storefront JSON-LD" — an
+  /// explicit, honest "not observed," never coerced to 0. A real 0 (a
+  /// product whose page genuinely emits a zero-review AggregateRating) is a
+  /// legitimate, distinct value from null.
+  reviewCount Int?
+  ratingValue Float?
+  /// Free text, not an enum — mirrors AdObservation.source: a future
+  /// non-JSON-LD storefront source shouldn't require a migration.
+  source      String  @default("storefront_jsonld")
+  /// Review app detected on the store at sampling time, if any (e.g.
+  /// "okendo") — sampling/attribution context only, never proof this
+  /// specific count actually came from that provider (see review-infrastructure.ts).
+  provider    String?
+  /// True when 2+ products sampled in the SAME crawl reported the exact same
+  /// non-null reviewCount — a real, observed signal (product-group/variant
+  /// sharing, confirmed live in Milestone 9 Sub-phase D) that this count may
+  /// not be independent per product. Never deduplicated or summed
+  /// automatically — see reviews/collect.ts and the hard "no store totals"
+  /// rule in reviews/signal.ts.
+  sharedWithGroup Boolean @default(false)
+
+  observedAt DateTime @default(now())
+
+  @@unique([productId, crawlId])
+  @@index([productId, observedAt(sort: Desc)])
+  /// Milestone 9 Sub-phase F: getReviewCoverageSummary()'s crawlId-only
+  /// lookup was a real, confirmed sequential scan (EXPLAIN ANALYZE at
+  /// 135,000 synthetic rows: 31.7ms, scanning every row in the table) —
+  /// the (productId, crawlId) composite unique index above cannot serve a
+  /// crawlId-only WHERE clause, since crawlId isn't its leading column.
+  /// This query's cost was scaling with total system-wide row count across
+  /// every store/crawl, not with any bounded sample size. Confirmed fixed
+  /// by EXPLAIN ANALYZE after adding this index — see the Sub-phase F report.
+  @@index([crawlId])
 }
 
 // ---------------------------------------------------------------------------

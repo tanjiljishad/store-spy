@@ -67,4 +67,29 @@ describe("fingerprintTech", () => {
     expect(() => fingerprintTech(html)).not.toThrow();
     expect(fingerprintTech(html).themeName).toBeNull();
   });
+
+  it("detects an attribution app from a script-domain signal", () => {
+    const html = `<script src="https://pixel.triplewhale.com/pixel/init.js"></script>`;
+    expect(fingerprintTech(html).apps).toContain("triplewhale");
+  });
+
+  it("detects an attribution app from a DOM-attribute signal alone, with no matching script domain", () => {
+    const html = `<div data-tw-product-id="123">No triplewhale.com URL anywhere in this markup</div>`;
+    expect(fingerprintTech(html).apps).toContain("triplewhale");
+  });
+
+  it("detects northbeam and elevar independently", () => {
+    const html = `<script src="https://js.northbeam.io/beam.js"></script><script src="https://cdn.getelevar.com/tag.js"></script>`;
+    const apps = fingerprintTech(html).apps;
+    expect(apps).toContain("northbeam");
+    expect(apps).toContain("elevar");
+  });
+
+  it("does not detect an attribution app when neither its script nor DOM signal is present", () => {
+    const html = `<html><body>plain storefront, no attribution stack</body></html>`;
+    const apps = fingerprintTech(html).apps;
+    expect(apps).not.toContain("triplewhale");
+    expect(apps).not.toContain("northbeam");
+    expect(apps).not.toContain("elevar");
+  });
 });

@@ -56,8 +56,21 @@ export interface CrawlOptions {
   /** Pause between page requests — politeness, not just evasion-avoidance. */
   requestDelayMs?: number;
   timeoutMs?: number;
+  /**
+   * Hard cap on any single response body, enforced while streaming — never
+   * after buffering the whole thing. Milestone 8 Sub-phase B: 10 MB is
+   * generously above any real Shopify `/products.json`/`/collections.json`/
+   * homepage response this crawler has ever seen in live verification (a
+   * full 250-product page runs from tens of KB to low hundreds of KB even
+   * for image/variant-heavy catalogs) while still bounding worst-case
+   * memory use to a small, fixed constant regardless of what a broken or
+   * hostile endpoint sends back.
+   */
+  maxResponseBytes?: number;
   onProgress?: CrawlProgressCallback;
 }
+
+const DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 export type CrawlResult =
   | { status: "ok"; input: NormalizeInput }
@@ -91,9 +104,10 @@ export async function crawlShopifyStore(
   const maxPages = opts.maxPages ?? 60;
   const requestDelayMs = opts.requestDelayMs ?? 250;
   const timeoutMs = opts.timeoutMs ?? 15_000;
+  const maxResponseBytes = opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const onProgress = opts.onProgress ?? (() => {});
   const baseUrl = `https://${domain}`;
-  const deps: FetchDeps = { fetchImpl, dnsLookup, userAgent, timeoutMs };
+  const deps: FetchDeps = { fetchImpl, dnsLookup, userAgent, timeoutMs, maxResponseBytes };
 
   onProgress({ phase: "validating", message: `Validating ${domain}` });
 
@@ -265,6 +279,7 @@ interface FetchDeps {
   dnsLookup?: DnsLookup;
   userAgent: string;
   timeoutMs: number;
+  maxResponseBytes: number;
 }
 
 interface PageSuccess {
@@ -286,36 +301,41 @@ async function fetchProductsPage(
   deps: FetchDeps,
 ): Promise<PageResult> {
   const url = `${baseUrl}/products.json?limit=${pageSize}&page=${page}`;
-  let res: Response;
+  let res: TimedFetchResult;
   try {
     res = await fetchWithTimeout(url, deps);
   } catch (e) {
     return { ok: false, httpStatus: null, retryAfterMs: null, error: describeNetworkError(e) };
   }
 
-  if (!res.ok) {
+  if (!res.response.ok) {
     return {
       ok: false,
-      httpStatus: res.status,
-      retryAfterMs: parseRetryAfter(res),
-      error: `HTTP ${res.status}`,
+      httpStatus: res.response.status,
+      retryAfterMs: parseRetryAfter(res.response),
+      error: `HTTP ${res.response.status}`,
     };
   }
 
-  const text = await res.text();
+  const body = await readBodyWithLimit(res.response, res.controller, res.timer, deps.maxResponseBytes);
+  if (!body.ok) {
+    return { ok: false, httpStatus: res.response.status, retryAfterMs: null, error: body.reason };
+  }
+  const text = body.text;
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
     const error = looksLikeBotChallenge(text) ? "bot-challenge page (non-JSON response)" : "invalid JSON";
-    return { ok: false, httpStatus: res.status, retryAfterMs: null, error };
+    return { ok: false, httpStatus: res.response.status, retryAfterMs: null, error };
   }
 
   const products = (parsed as { products?: unknown }).products;
   if (!Array.isArray(products)) {
     return {
       ok: false,
-      httpStatus: res.status,
+      httpStatus: res.response.status,
       retryAfterMs: null,
       error: "response has no products array — likely not a Shopify storefront",
     };
@@ -358,8 +378,10 @@ async function fetchBestsellerRanks(
   const url = `${baseUrl}/collections/all/products.json?limit=${pageSize}&sort_by=best-selling`;
   try {
     const res = await fetchWithTimeout(url, deps);
-    if (!res.ok) return new Map();
-    const parsed = JSON.parse(await res.text()) as { products?: ShopifyProduct[] };
+    if (!res.response.ok) return new Map();
+    const body = await readBodyWithLimit(res.response, res.controller, res.timer, deps.maxResponseBytes);
+    if (!body.ok) return new Map();
+    const parsed = JSON.parse(body.text) as { products?: ShopifyProduct[] };
     if (!Array.isArray(parsed.products)) return new Map();
     const ranks = new Map<string, number>();
     parsed.products.forEach((p, i) => ranks.set(String(p.id), i));
@@ -395,8 +417,10 @@ async function fetchCollectionHandles(
     let pageHandles: string[];
     try {
       const res = await fetchWithTimeout(url, deps);
-      if (!res.ok) return { handles, complete: false };
-      const parsed = JSON.parse(await res.text()) as { collections?: Array<{ handle?: string }> };
+      if (!res.response.ok) return { handles, complete: false };
+      const body = await readBodyWithLimit(res.response, res.controller, res.timer, deps.maxResponseBytes);
+      if (!body.ok) return { handles, complete: false };
+      const parsed = JSON.parse(body.text) as { collections?: Array<{ handle?: string }> };
       if (!Array.isArray(parsed.collections)) return { handles, complete: false };
       pageHandles = parsed.collections.map((c) => c.handle).filter((h): h is string => Boolean(h));
     } catch {
@@ -420,10 +444,70 @@ async function fetchCollectionHandles(
 async function fetchHomepage(baseUrl: string, deps: FetchDeps): Promise<string | null> {
   try {
     const res = await fetchWithTimeout(`${baseUrl}/`, deps, { Accept: "text/html" });
-    if (!res.ok) return null;
-    return await res.text();
+    if (!res.response.ok) return null;
+    const body = await readBodyWithLimit(res.response, res.controller, res.timer, deps.maxResponseBytes);
+    return body.ok ? body.text : null;
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Single product-page fetch — Milestone 9 Sub-phase E (bounded storefront
+// JSON-LD review-count sampling, see src/lib/reviews/collect.ts, the only
+// caller). Deliberately NOT part of crawlShopifyStore()'s own flow: this
+// crawler has never fetched individual product pages as part of a normal
+// catalog crawl, and still doesn't — this is a small, separately-bounded,
+// best-effort sample taken after the main crawl, over already-persisted
+// products. Reuses the exact same SSRF-guarded, timeout-bounded, size-capped
+// fetchWithTimeout/readBodyWithLimit machinery as every other request this
+// file makes, rather than a second, weaker HTTP layer.
+// ---------------------------------------------------------------------------
+
+export interface FetchProductPageOptions {
+  fetchImpl?: FetchLike;
+  dnsLookup?: DnsLookup;
+  userAgent?: string;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+}
+
+export type ProductPageFetchResult =
+  | { status: "ok"; html: string }
+  | { status: "blocked"; reason: string }
+  | { status: "not_found"; reason: string }
+  | { status: "error"; reason: string };
+
+export async function fetchProductPageHtml(
+  domain: string,
+  handle: string,
+  opts: FetchProductPageOptions = {},
+): Promise<ProductPageFetchResult> {
+  const baseUrl = `https://${canonicalizeDomain(domain)}`;
+  const deps: FetchDeps = {
+    fetchImpl: opts.fetchImpl ?? fetch,
+    dnsLookup: opts.dnsLookup,
+    userAgent: opts.userAgent ?? DEFAULT_USER_AGENT,
+    timeoutMs: opts.timeoutMs ?? 15_000,
+    maxResponseBytes: opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+  };
+
+  try {
+    const res = await fetchWithTimeout(`${baseUrl}/products/${encodeURIComponent(handle)}`, deps, { Accept: "text/html" });
+    if (!res.response.ok) {
+      if (res.response.status === 401 || res.response.status === 403) {
+        return { status: "blocked", reason: `product page returned HTTP ${res.response.status}` };
+      }
+      if (res.response.status === 404) {
+        return { status: "not_found", reason: "product page returned HTTP 404" };
+      }
+      return { status: "error", reason: `HTTP ${res.response.status}` };
+    }
+    const body = await readBodyWithLimit(res.response, res.controller, res.timer, deps.maxResponseBytes);
+    if (!body.ok) return { status: "error", reason: body.reason };
+    return { status: "ok", html: body.text };
+  } catch (e) {
+    return { status: "error", reason: describeNetworkError(e) };
   }
 }
 
@@ -444,6 +528,27 @@ function extractCurrency(html: string): string | null {
 
 const MAX_REDIRECTS = 5;
 
+interface TimedFetchResult {
+  response: Response;
+  /**
+   * The same controller that governs `response`'s own request — exposed so
+   * a caller reading the body can abort mid-stream on the SAME timeout/
+   * size-cap signal, not a disconnected second one. Each redirect hop gets
+   * its own controller+timer (a followed redirect's response body is never
+   * read), so this is always the controller for the final, body-bearing
+   * response actually returned.
+   */
+  controller: AbortController;
+  /**
+   * The timer backing that same request's timeout — still running when a
+   * non-redirect response is returned (deliberately not cleared yet: it
+   * must keep bounding a slow/stalled BODY read, not just the initial
+   * response headers). `null` for a redirect response, which has no body a
+   * caller will ever read. `readBodyWithLimit` clears it when done.
+   */
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
 /**
  * Manual redirect handling, not fetch's automatic follow: a validated public
  * URL can redirect to an internal one, and the SSRF guard only ever saw the
@@ -453,7 +558,7 @@ async function fetchWithTimeout(
   url: string,
   deps: FetchDeps,
   extraHeaders: Record<string, string> = {},
-): Promise<Response> {
+): Promise<TimedFetchResult> {
   let currentUrl = url;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
@@ -471,22 +576,92 @@ async function fetchWithTimeout(
         signal: controller.signal,
         redirect: "manual",
       });
-    } finally {
+    } catch (e) {
       clearTimeout(timer);
+      throw e;
     }
 
     if (res.status < 300 || res.status >= 400) {
-      return res;
+      return { response: res, controller, timer };
     }
+    clearTimeout(timer);
 
     const location = res.headers.get("location");
     if (!location) {
-      return res; // redirect status with no target — let the caller treat it as a non-ok response
+      return { response: res, controller, timer: null }; // redirect status with no target — let the caller treat it as a non-ok response; no body to read either way
     }
     currentUrl = new URL(location, currentUrl).toString();
   }
 
   throw new Error(`too many redirects (>${MAX_REDIRECTS})`);
+}
+
+type ReadResult = { ok: true; text: string } | { ok: false; reason: string };
+
+/**
+ * Reads a response body with a hard size cap enforced WHILE STREAMING, never
+ * by buffering the whole thing first and checking afterward (that would
+ * defeat the whole point — the memory is already spent by the time
+ * `.text()` returns). Checks the declared `Content-Length` up front as a
+ * fast rejection when a server is at least honest about an oversized body,
+ * but does not trust it alone — a missing, wrong, or lying Content-Length
+ * (chunked transfer encoding never sends one at all) is exactly the case
+ * the streaming byte-count below exists to catch.
+ *
+ * Reuses the SAME AbortController the request's own timeout already uses:
+ * exceeding the cap mid-stream calls `.abort()`, which both stops the
+ * in-flight body read and (defense in depth) cancels the underlying
+ * connection — one signal, one mechanism, not a second parallel one.
+ */
+async function readBodyWithLimit(
+  response: Response,
+  controller: AbortController,
+  timer: ReturnType<typeof setTimeout> | null,
+  maxBytes: number,
+): Promise<ReadResult> {
+  try {
+    const declared = response.headers.get("content-length");
+    if (declared !== null) {
+      const declaredBytes = Number(declared);
+      if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+        controller.abort();
+        return { ok: false, reason: `declared content-length ${declaredBytes} exceeds the ${maxBytes}-byte limit` };
+      }
+    }
+
+    if (!response.body) {
+      // No stream at all (e.g. a 204/HEAD-shaped response) — nothing to cap, nothing to read.
+      return { ok: true, text: "" };
+    }
+
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        controller.abort();
+        await reader.cancel().catch(() => {});
+        return { ok: false, reason: `response body exceeded the ${maxBytes}-byte limit while streaming` };
+      }
+      chunks.push(value);
+    }
+
+    const combined = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      combined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { ok: true, text: new TextDecoder().decode(combined) };
+  } catch (e) {
+    return { ok: false, reason: describeNetworkError(e) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function parseRetryAfter(res: Response): number | null {

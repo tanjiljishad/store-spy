@@ -1,0 +1,84 @@
+# Render Blueprint — Milestone 8 Sub-phase B.
+#
+# Two long-lived process roles against one managed Postgres, per
+# docs/milestone-8-subphase-a-production-architecture-research.md Section 27
+# ("Option B") and Section 32 (final recommendation): no queue, no Redis, no
+# container orchestrator. Render is the primary host recommendation there;
+# Fly.io was the equally-valid alternative — this file commits to Render
+# concretely, as Sub-phase B's brief requires picking one, not leaving both open.
+#
+# Postgres itself is NOT defined here — Render's own managed Postgres was not
+# chosen (Neon/Supabase were the research's recommendation, for their bundled
+# connection pooling, Section 27). Provision the database on Neon (or Supabase)
+# directly and paste its connection string into DATABASE_URL below via the
+# Render dashboard — never into this file.
+#
+# Every envVar below uses `sync: false`, meaning Render stores the real value
+# only in its own dashboard/secret store — this file never contains one.
+# See docs/environment-variables.md for what each variable protects and how
+# to generate it, and docs/staging-deployment.md for the full setup checklist.
+
+services:
+  - type: web
+    name: bellwether-web
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: main
+    buildCommand: npm ci && npm run prisma:generate && npm run build
+    # Applies pending migrations before the new web instance takes traffic.
+    # Runs once per deploy, only on the web service — the worker's own build
+    # does NOT also run this, so exactly one process applies migrations per
+    # deploy, never two racing each other.
+    preDeployCommand: npx prisma migrate deploy
+    startCommand: npm run start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AUTH_TRUST_HOST
+        value: "true"
+      - key: DATABASE_URL
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: FACEBOOK_CLIENT_ID
+        sync: false
+      - key: FACEBOOK_CLIENT_SECRET
+        sync: false
+      - key: SERPAPI_API_KEY
+        sync: false
+      - key: SCHEDULER_SECRET
+        sync: false
+
+  - type: worker
+    name: bellwether-worker
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: main
+    # No preDeployCommand here — migrations are applied once, by the web
+    # service above. The worker's build only needs a generated Prisma client.
+    buildCommand: npm ci && npm run prisma:generate
+    startCommand: npm run worker
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: SERPAPI_API_KEY
+        sync: false
+      # AUTH_SECRET/AUTH_TRUST_HOST intentionally omitted — verified this
+      # sub-phase (Milestone 8 Sub-phase C) that the worker's own import
+      # chain never touches next-auth/@auth/core (it only calls the
+      # scheduler functions and Prisma directly), and a real local worker
+      # run with AUTH_SECRET unset completed a full cycle with no error.
+      # SCHEDULER_SECRET is also intentionally omitted — the worker calls
+      # runSchedulerTick()/runMarketingSchedulerTick() directly, in-process,
+      # never through the HTTP-authenticated /api/internal/scheduler/* routes
+      # (see scripts/worker.ts's own header comment and
+      # docs/environment-variables.md). It needs neither.

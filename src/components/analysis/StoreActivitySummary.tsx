@@ -17,6 +17,17 @@ interface ActivityResponse {
 
 export interface StoreActivitySummaryProps {
   domain: string;
+  /**
+   * Sub-phase D: when the caller already has this data (the dashboard Store
+   * Intelligence page's server component computes the equivalent data via
+   * the intelligence composer on every render), pass it here to skip the
+   * redundant client-side round trip entirely — no fetch is made at all.
+   * Omit it (as FullReportView.tsx still does — it has no server-composed
+   * report to seed from, since the SSE analyze path is deliberately not
+   * wired to the composer) to keep the original fetch-on-mount behavior,
+   * unchanged.
+   */
+  initialData?: ActivityResponse;
 }
 
 /**
@@ -25,11 +36,12 @@ export interface StoreActivitySummaryProps {
  * nothing (not a fake empty state) if the fetch itself fails; the honest
  * "not enough history yet" state is a real, successful response, not an error.
  */
-export function StoreActivitySummary({ domain }: StoreActivitySummaryProps) {
-  const [data, setData] = useState<ActivityResponse | null>(null);
+export function StoreActivitySummary({ domain, initialData }: StoreActivitySummaryProps) {
+  const [data, setData] = useState<ActivityResponse | null>(initialData ?? null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    if (initialData) return; // already have it — no network request at all
     let cancelled = false;
     fetch(`/api/store/${encodeURIComponent(domain)}/activity`)
       .then((r) => (r.ok ? (r.json() as Promise<ActivityResponse>) : Promise.reject(new Error(String(r.status)))))
@@ -42,7 +54,7 @@ export function StoreActivitySummary({ domain }: StoreActivitySummaryProps) {
     return () => {
       cancelled = true;
     };
-  }, [domain]);
+  }, [domain, initialData]);
 
   if (failed) return null;
   if (!data) {

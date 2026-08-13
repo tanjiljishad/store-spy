@@ -37,7 +37,13 @@ async function makeCrawl(storeId: string, finishedAt: Date) {
     data: { storeId, status: "OK", startedAt: new Date(finishedAt.getTime() - 1000), finishedAt },
   });
 }
-async function makeProduct(storeId: string, externalId: string, firstSeenAt: Date, missingSince: Date | null = null) {
+async function makeProduct(
+  storeId: string,
+  externalId: string,
+  firstSeenAt: Date,
+  missingSince: Date | null = null,
+  sourceCreatedAt: Date | null = null,
+) {
   return prisma.product.create({
     data: {
       storeId,
@@ -48,6 +54,7 @@ async function makeProduct(storeId: string, externalId: string, firstSeenAt: Dat
       priceMaxCents: 1000,
       firstSeenAt,
       missingSince,
+      sourceCreatedAt,
     },
   });
 }
@@ -118,5 +125,66 @@ describe("getCatalogGrowthTrend — real Postgres", () => {
     if (result.status !== "OBSERVED") throw new Error("unreachable");
     // The product must already be counted at the exact date of its own discovery.
     expect(result.points.map((p) => p.size)).toEqual([0, 0, 1]);
+  });
+
+  describe("reconstruction from sourceCreatedAt — below MIN_CRAWLS_FOR_CATALOG_TREND", () => {
+    it("a SINGLE real crawl still produces a real growth curve when products carry a launch date", async () => {
+      const store = await makeStore();
+      await makeCrawl(store.id, D("2026-06-01"));
+
+      // All three products were discovered on the same (only) crawl, but
+      // their real Shopify launch dates span two years — this is exactly
+      // the "single analyze, full history" case.
+      await makeProduct(store.id, "p1", D("2026-06-01"), null, D("2024-01-01"));
+      await makeProduct(store.id, "p2", D("2026-06-01"), null, D("2025-01-01"));
+      await makeProduct(store.id, "p3", D("2026-06-01"), null, D("2026-01-01"));
+
+      const result = await getCatalogGrowthTrend(prisma, store.id);
+      expect(result.status).toBe("OBSERVED");
+      if (result.status !== "OBSERVED") throw new Error("unreachable");
+      expect(result.reconstructedFromLaunchDates).toBe(true);
+      expect(result.sampledFromCrawlCount).toBe(1);
+      // Monotonically increasing from 0 up to 3 as each product's real launch date passes.
+      expect(result.points[0].size).toBe(1); // sampling starts AT the earliest launch date itself
+      expect(result.points[result.points.length - 1].size).toBe(3);
+      expect(result.points.every((p, i) => i === 0 || p.size >= result.points[i - 1].size)).toBe(true);
+    });
+
+    it("falls back to INSUFFICIENT_HISTORY when no visible product carries a launch date", async () => {
+      const store = await makeStore();
+      await makeCrawl(store.id, D("2026-06-01"));
+      await makeProduct(store.id, "p1", D("2026-06-01")); // no sourceCreatedAt
+
+      const result = await getCatalogGrowthTrend(prisma, store.id);
+      expect(result.status).toBe("INSUFFICIENT_HISTORY");
+    });
+
+    it("degrades gracefully: a product missing sourceCreatedAt still counts, using firstSeenAt instead", async () => {
+      const store = await makeStore();
+      await makeCrawl(store.id, D("2026-06-01"));
+      await makeProduct(store.id, "dated", D("2026-06-01"), null, D("2024-01-01"));
+      await makeProduct(store.id, "undated", D("2026-06-01")); // no sourceCreatedAt — falls back to firstSeenAt
+
+      const result = await getCatalogGrowthTrend(prisma, store.id);
+      expect(result.status).toBe("OBSERVED");
+      if (result.status !== "OBSERVED") throw new Error("unreachable");
+      // The undated product only counts once its firstSeenAt (the single
+      // crawl date) is reached — at the very last sampled point.
+      expect(result.points[result.points.length - 1].size).toBe(2);
+      expect(result.points[0].size).toBe(1);
+    });
+
+    it("real crawl-sampled trends (>= MIN_CRAWLS_FOR_CATALOG_TREND) are never marked reconstructed", async () => {
+      const store = await makeStore();
+      await makeCrawl(store.id, D("2026-01-01"));
+      await makeCrawl(store.id, D("2026-02-01"));
+      await makeCrawl(store.id, D("2026-03-01"));
+      await makeProduct(store.id, "p1", D("2026-01-01"), null, D("2020-01-01"));
+
+      const result = await getCatalogGrowthTrend(prisma, store.id);
+      expect(result.status).toBe("OBSERVED");
+      if (result.status !== "OBSERVED") throw new Error("unreachable");
+      expect(result.reconstructedFromLaunchDates).toBe(false);
+    });
   });
 });

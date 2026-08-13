@@ -2,9 +2,16 @@ import type { PrismaClient } from "@prisma/client";
 import type { ObservedField, UnavailableField } from "../analysis/report-contract";
 import { computeGrowthSignals, getActivitySummary, type ActivitySummary, type GrowthSignal } from "../monitoring/activity";
 import { getCatalogGrowthTrend, type CatalogTrendResult } from "./catalog";
+import { getCatalogComposition, type CatalogCompositionResult } from "./composition";
 import { getReviewInfrastructureSignal, type ReviewInfrastructureEntry } from "./review-infrastructure";
 import { getFreshnessSignal, type FreshnessSignal } from "./freshness";
 import { getBestsellerSignal, type BestsellerSignal } from "./bestseller";
+import {
+  getReviewObservationSignal,
+  getReviewCoverageSummary,
+  type ReviewObservationSignal,
+  type ReviewCoverageSummary,
+} from "../reviews/signal";
 
 /**
  * Growth signals — an additive, store-scoped report, deliberately NOT merged
@@ -27,11 +34,23 @@ export interface CatalogGrowthView {
   productsAdded: number;
   productsRemoved: number;
   productsRestored: number;
+  /**
+   * Added Milestone 7 Sub-phase D — was already computed by getActivitySummary()
+   * but not previously exposed here, which is why StoreActivitySummary.tsx kept
+   * its own separate /activity fetch instead of being seedable from this report.
+   */
+  priceChanges: number;
   productCountDelta: number | null;
   currentProductCount: number;
   hasEnoughHistory: boolean;
   signals: GrowthSignal[];
   trend: CatalogTrendResult;
+  /**
+   * Current-catalog snapshot (price spread, discount depth, vendor/type
+   * mix) — a single, no-history-required read, unlike `trend`. See
+   * composition.ts.
+   */
+  composition: CatalogCompositionResult;
 }
 
 export interface ProductHighlight {
@@ -40,6 +59,13 @@ export interface ProductHighlight {
   title: string;
   freshness: FreshnessSignal;
   bestseller: BestsellerSignal;
+  /**
+   * Milestone 9 Sub-phase E — bounded storefront JSON-LD review-count
+   * sample, product-level only. NOT present for every highlighted product:
+   * only the ones actually included in that crawl's bounded sample (see
+   * reviews/sampling.ts) carry anything beyond NOT_SAMPLED.
+   */
+  reviewObservation: ReviewObservationSignal;
 }
 
 export interface GrowthReport {
@@ -48,6 +74,12 @@ export interface GrowthReport {
   catalogGrowth: CatalogGrowthView;
   reviewInfrastructure: ObservedField<ReviewInfrastructureEntry[]> | UnavailableField;
   productHighlights: ProductHighlight[];
+  /**
+   * SAMPLE coverage, never a store-wide review total — see reviews/signal.ts's
+   * own doc comment. "8 of 20 sampled products exposed a review count" is a
+   * fact about the sample, not a fact about the store's real review inventory.
+   */
+  reviewCoverage: ReviewCoverageSummary;
 }
 
 interface HighlightProductRow {
@@ -102,12 +134,15 @@ async function selectHighlightProducts(prisma: PrismaClient, storeId: string): P
 export async function buildGrowthReport(prisma: PrismaClient, storeId: string, domain: string): Promise<GrowthReport> {
   const store = await prisma.store.findUniqueOrThrow({ where: { id: storeId }, select: { baselinedAt: true } });
 
-  const [activitySummary, trend, reviewInfrastructure, highlightProducts] = await Promise.all([
-    getActivitySummary(prisma, storeId),
-    getCatalogGrowthTrend(prisma, storeId),
-    getReviewInfrastructureSignal(prisma, storeId, store.baselinedAt),
-    selectHighlightProducts(prisma, storeId),
-  ]);
+  const [activitySummary, trend, composition, reviewInfrastructure, highlightProducts, reviewCoverage] =
+    await Promise.all([
+      getActivitySummary(prisma, storeId),
+      getCatalogGrowthTrend(prisma, storeId),
+      getCatalogComposition(prisma, storeId),
+      getReviewInfrastructureSignal(prisma, storeId, store.baselinedAt),
+      selectHighlightProducts(prisma, storeId),
+      getReviewCoverageSummary(prisma, storeId),
+    ]);
 
   // Bounded, fixed-size fan-out: MAX_PRODUCT_HIGHLIGHTS products, each a
   // constant number of already-bounded queries (see persistence.ts/
@@ -115,7 +150,7 @@ export async function buildGrowthReport(prisma: PrismaClient, storeId: string, d
   // to keep wall-clock latency flat rather than proportional to the count.
   const productHighlights = await Promise.all(
     highlightProducts.map(async (p): Promise<ProductHighlight> => {
-      const [freshness, bestseller] = await Promise.all([
+      const [freshness, bestseller, reviewObservation] = await Promise.all([
         getFreshnessSignal(prisma, storeId, {
           externalId: p.externalId,
           firstSeenAt: p.firstSeenAt,
@@ -123,30 +158,38 @@ export async function buildGrowthReport(prisma: PrismaClient, storeId: string, d
           status: p.status,
         }),
         getBestsellerSignal(prisma, { id: p.id, bestsellerRank: p.bestsellerRank }),
+        getReviewObservationSignal(prisma, p.id),
       ]);
-      return { productId: p.id, handle: p.handle, title: p.title, freshness, bestseller };
+      return { productId: p.id, handle: p.handle, title: p.title, freshness, bestseller, reviewObservation };
     }),
   );
 
   return {
     domain,
     checkedAt: new Date().toISOString(),
-    catalogGrowth: buildCatalogGrowthView(activitySummary, trend),
+    catalogGrowth: buildCatalogGrowthView(activitySummary, trend, composition),
     reviewInfrastructure,
     productHighlights,
+    reviewCoverage,
   };
 }
 
-function buildCatalogGrowthView(summary: ActivitySummary, trend: CatalogTrendResult): CatalogGrowthView {
+function buildCatalogGrowthView(
+  summary: ActivitySummary,
+  trend: CatalogTrendResult,
+  composition: CatalogCompositionResult,
+): CatalogGrowthView {
   return {
     windowDays: summary.windowDays,
     productsAdded: summary.productsAdded,
     productsRemoved: summary.productsRemoved,
     productsRestored: summary.productsRestored,
+    priceChanges: summary.priceChanges,
     productCountDelta: summary.productCountDelta,
     currentProductCount: summary.currentProductCount,
     hasEnoughHistory: summary.hasEnoughHistory,
     signals: computeGrowthSignals(summary),
     trend,
+    composition,
   };
 }

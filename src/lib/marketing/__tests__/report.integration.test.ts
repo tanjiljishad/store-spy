@@ -114,38 +114,6 @@ describe("buildMarketingReport — the OBSERVED/UNAVAILABLE contract", () => {
 });
 
 describe("buildMarketingReport — Sub-phase E: explicit epistemic fields", () => {
-  it("productMatching, adSpend, impressions, and conversions are ALWAYS UNAVAILABLE with real, specific reasons — regardless of ads status", async () => {
-    const neverChecked = await makeStore();
-    const reportA = await buildMarketingReport(prisma, neverChecked.id, neverChecked.domain);
-    expect(reportA.productMatching).toEqual({
-      status: "UNAVAILABLE",
-      reason: "Product-level matching unavailable from the current advertising data source.",
-    });
-    expect(reportA.adSpend.status).toBe("UNAVAILABLE");
-    expect(reportA.impressions.status).toBe("UNAVAILABLE");
-    expect(reportA.conversions.status).toBe("UNAVAILABLE");
-
-    const checkedWithAds = await makeStore();
-    await prisma.marketingCollectionRun.create({
-      data: { storeId: checkedWithAds.id, platform: "GOOGLE", outcome: "SUCCESS", adsObserved: 1, finishedAt: new Date() },
-    });
-    await prisma.adObservation.create({
-      data: {
-        storeId: checkedWithAds.id,
-        platform: "GOOGLE",
-        externalAdId: "CR001",
-        status: "ACTIVE_EVIDENCE",
-        firstSeenAt: new Date(),
-        lastSeenAt: new Date(),
-        source: "SERPAPI_GOOGLE_ADS_TRANSPARENCY_CENTER",
-      },
-    });
-    const reportB = await buildMarketingReport(prisma, checkedWithAds.id, checkedWithAds.domain);
-    // Still UNAVAILABLE even when ads WERE found — matching is a source
-    // capability gap, not a per-store result.
-    expect(reportB.productMatching.status).toBe("UNAVAILABLE");
-  });
-
   it("regions are extracted from real sourceMetadata when present", async () => {
     const store = await makeStore();
     await prisma.marketingCollectionRun.create({

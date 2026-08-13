@@ -43,10 +43,21 @@ export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
   const caller = user ? { userId: user.id, plan: user.plan as PlanTier } : null;
 
+  // Shared across start()/cancel() — a client disconnect (nav away, closed
+  // tab, dropped connection) invokes cancel() on a SEPARATE method of this
+  // same underlying-source object, not inside start()'s own closure. This
+  // flag previously lived only inside start(), so cancel()'s comment ("this
+  // only stops us from writing to a closed stream") was never actually true:
+  // a mid-crawl disconnect left `send()` still calling controller.enqueue()
+  // on an already-cancelled controller, throwing "Invalid state: Controller
+  // is already closed" and logging a false "analysis crashed" for a request
+  // that was simply abandoned by the client, not actually broken. Found via
+  // live browser verification (Milestone 7 Sub-phase C) — see the
+  // regression test below for the exact reproduction.
+  let closed = false;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
-      let closed = false;
       const send = (event: AnalysisSseEvent) => {
         if (closed) return;
         controller.enqueue(encoder.encode(sseLine(event)));
@@ -55,6 +66,7 @@ export async function POST(req: NextRequest) {
       try {
         await runAnalysis({ prisma, urlInput: url, onEvent: send, caller });
       } catch (e) {
+        if (closed) return; // client already disconnected — nothing left to report to
         // Never forward internal error detail/stack traces to the client.
         console.error("[api/analyze] analysis crashed:", e);
         send({
@@ -64,14 +76,17 @@ export async function POST(req: NextRequest) {
           retryable: true,
         });
       } finally {
-        closed = true;
-        controller.close();
+        if (!closed) {
+          closed = true;
+          controller.close();
+        }
       }
     },
     cancel() {
-      // Client disconnected (navigated away, closed tab). The in-flight
-      // crawl in runAnalysis isn't cancelled — it still finishes and
-      // persists — this only stops us from writing to a closed stream.
+      // Client disconnected. The in-flight crawl in runAnalysis isn't
+      // cancelled — it still finishes and persists — this only stops
+      // send() from writing to a controller that's no longer there.
+      closed = true;
     },
   });
 

@@ -1,4 +1,5 @@
 import type { FullStoreReport } from "@/lib/analysis/types";
+import type { IntelligenceField } from "@/lib/analysis/report-contract";
 import { MonitoringStatusCard } from "./MonitoringStatusCard";
 import { StoreActivitySummary } from "./StoreActivitySummary";
 import { GrowthIntelligence } from "./GrowthIntelligence";
@@ -7,6 +8,7 @@ import { ChangeFeedTimeline } from "./ChangeFeedTimeline";
 import { IntelligenceCard } from "@/components/dashboard/IntelligenceCard";
 import { SectionLabel } from "@/components/dashboard/SectionLabel";
 import { MARKETING_EVENT_TYPES } from "@/lib/marketing/event-types";
+import { TECHNOLOGY_EVENT_TYPES } from "@/lib/monitoring/event-categories";
 
 export interface FullReportViewProps {
   report: FullStoreReport;
@@ -67,56 +69,49 @@ export function FullReportView({ report, onNewAnalysis }: FullReportViewProps) {
           format={(v) => (v.length > 0 ? `${v.length} detected` : "None detected")}
         />
       </div>
-      {report.apps.status === "OBSERVED" && report.apps.value.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {report.apps.value.map((app) => (
-            <span key={app} className="rounded-md border border-line px-3 py-1.5 font-mono text-[12.5px] text-paper">
-              {app}
-            </span>
-          ))}
-        </div>
-      )}
-      {report.pixels.status === "OBSERVED" && report.pixels.value.length > 0 && (
-        <div className="mt-3">
-          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-dim">Pixels</div>
-          <div className="flex flex-wrap gap-2">
-            {report.pixels.value.map((pixel) => (
-              <span key={pixel} className="rounded-md border border-line px-3 py-1.5 font-mono text-[12.5px] text-paper">
-                {pixel}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      {report.paymentProviders.status === "OBSERVED" && report.paymentProviders.value.length > 0 && (
-        <div className="mt-3">
-          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-dim">Payment providers</div>
-          <div className="flex flex-wrap gap-2">
-            {report.paymentProviders.value.map((provider) => (
-              <span key={provider} className="rounded-md border border-line px-3 py-1.5 font-mono text-[12.5px] text-paper">
-                {provider}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+
+      <SectionLabel className="mt-9">Technology stack</SectionLabel>
+      <TechnologyChips apps={report.apps} pixels={report.pixels} paymentProviders={report.paymentProviders} />
+      <div className="mt-4">
+        <ChangeFeedTimeline
+          domain={report.domain}
+          totalCrawls={report.monitoring.totalCrawls}
+          eventTypes={[...TECHNOLOGY_EVENT_TYPES]}
+          steadyEmptyState={{
+            headline: "No technology changes detected yet",
+            detail: "App, pixel, payment-provider, and theme changes will appear here as they're observed.",
+          }}
+        />
+      </div>
 
       <SectionLabel className="mt-9">Business intelligence</SectionLabel>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <IntelligenceCard
           label="Estimated revenue"
           field={report.revenue}
           format={(v) => `$${(v.minCents / 100).toLocaleString()}–$${(v.maxCents / 100).toLocaleString()}`}
+          unavailableHint="Detected instead: catalog size, average price, and catalog growth activity, below."
         />
-        <IntelligenceCard label="Estimated traffic" field={report.traffic} format={(v) => v.monthlyVisits.toLocaleString()} />
-        <IntelligenceCard label="Review velocity" field={report.reviewVelocity} format={(v) => `${v.reviewsPerMonth}/mo`} />
+        <IntelligenceCard
+          label="Estimated traffic"
+          field={report.traffic}
+          format={(v) => v.monthlyVisits.toLocaleString()}
+          unavailableHint="Detected instead: advertising activity and catalog change frequency, below."
+        />
       </div>
 
       <SectionLabel className="mt-9">Store activity</SectionLabel>
       <StoreActivitySummary domain={report.domain} />
 
-      <SectionLabel className="mt-9">Growth signals</SectionLabel>
       <GrowthIntelligence domain={report.domain} />
+      <div className="mt-4">
+        <IntelligenceCard
+          label="Review velocity"
+          field={report.reviewVelocity}
+          format={(v) => `${v.reviewsPerMonth}/mo`}
+          unavailableHint="Detected instead: whether a review-collection app is installed, above."
+        />
+      </div>
 
       <SectionLabel className="mt-9">Recent changes</SectionLabel>
       <ChangeFeedTimeline domain={report.domain} totalCrawls={report.monitoring.totalCrawls} />
@@ -134,6 +129,60 @@ export function FullReportView({ report, onNewAnalysis }: FullReportViewProps) {
           }}
         />
       </div>
+    </div>
+  );
+}
+
+interface TechnologyChipsProps {
+  apps: IntelligenceField<string[]>;
+  pixels: IntelligenceField<string[]>;
+  paymentProviders: IntelligenceField<string[]>;
+}
+
+/**
+ * The Technology stack section's chip lists — same chip styling as the
+ * original "Apps / technologies" chip row (Milestone 7 Sub-phase B), simply
+ * relocated out of Store overview into its own section and given ADDED/
+ * REMOVED/CURRENT context via the technology-filtered timeline next to it.
+ * Renders nothing for a kind that's OBSERVED-but-empty or UNAVAILABLE —
+ * matches the existing "never render an empty chip row" convention.
+ */
+function TechnologyChips({ apps, pixels, paymentProviders }: TechnologyChipsProps) {
+  const rows: Array<{ label: string; field: IntelligenceField<string[]> }> = [
+    { label: "Apps", field: apps },
+    { label: "Pixels", field: pixels },
+    { label: "Payment providers", field: paymentProviders },
+  ];
+  const visible = rows.filter((r) => r.field.status === "OBSERVED" && r.field.value.length > 0);
+
+  if (visible.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-line px-5 py-7 text-center">
+        <p className="font-display text-base font-bold">No technology signatures detected</p>
+        <p className="mt-1.5 font-mono text-xs text-muted-dim">
+          No known app, pixel, or payment-provider signature was found on this storefront.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {visible.map(({ label, field }) => {
+        if (field.status !== "OBSERVED") return null;
+        return (
+          <div key={label}>
+            <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-dim">{label}</div>
+            <div className="flex flex-wrap gap-2">
+              {field.value.map((v) => (
+                <span key={v} className="rounded-md border border-line px-3 py-1.5 font-mono text-[12.5px] text-paper">
+                  {v}
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

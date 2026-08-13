@@ -7,7 +7,9 @@ import { applyCrawlFailureToStore } from "../monitoring/crawl-outcome";
 import { getAnalysisUsage, hasAnalyzedStore, recordAnalysisUsage } from "../entitlements/analysis-usage";
 import { isUnderLimit } from "../entitlements/plan-limits";
 import type { PlanTier } from "../entitlements/plan-limits";
-import { unavailable } from "./report-contract";
+import { permanentlyUnavailable, unavailable } from "./report-contract";
+import { enrichDomainAgeIfUnknown } from "../enrichment/domain-age";
+import { collectStorefrontReviewObservations } from "../reviews/collect";
 import type { AnalysisReport, AnalysisSseEvent, AnalysisStatus, FullStoreReport } from "./types";
 
 /**
@@ -187,6 +189,28 @@ export async function runAnalysis(args: RunAnalysisArgs): Promise<void> {
 
   onEvent({ type: "status", status: "completed" });
   onEvent({ type: "complete", report });
+
+  // Best-effort, after the user-facing stream has already delivered its
+  // result — never blocks or delays what the caller sees. No-ops instantly
+  // (zero external calls) on every crawl after the first for this store —
+  // see enrichDomainAgeIfUnknown's own doc comment. A failure here must
+  // never surface as an analysis failure; the crawl itself already fully
+  // succeeded by this point.
+  try {
+    await enrichDomainAgeIfUnknown(prisma, store.id, domain, fetchImpl);
+  } catch {
+    // Swallowed deliberately — see comment above.
+  }
+
+  // Also best-effort and also never surfaces as an analysis failure — but,
+  // unlike enrichDomainAgeIfUnknown, deliberately NOT "look up once, cache
+  // forever": review counts genuinely change over time, so this attempts a
+  // fresh, small, bounded sample on every crawl. See reviews/collect.ts.
+  try {
+    await collectStorefrontReviewObservations(prisma, store.id, domain, crawlRow.id, { fetchImpl, dnsLookup });
+  } catch {
+    // Swallowed deliberately — see comment above.
+  }
 }
 
 function emitLimitReached(onEvent: (event: AnalysisSseEvent) => void): void {
@@ -301,9 +325,9 @@ export async function buildFullStoreReport(
     // AGENTS.md / the Milestone 3 report. Genuinely unavailable, not a
     // paywalled tease: an authenticated user is entitled to see everything
     // currently supported, and this simply isn't built.
-    revenue: unavailable("No validated revenue model implemented yet"),
-    traffic: unavailable("No validated traffic estimation model implemented yet"),
-    reviewVelocity: unavailable("Review history is not yet reliably collected"),
+    revenue: permanentlyUnavailable("No validated revenue model implemented yet"),
+    traffic: permanentlyUnavailable("No validated traffic estimation model implemented yet"),
+    reviewVelocity: permanentlyUnavailable("Review history is not yet reliably collected"),
     monitoring: {
       tier: store.tier,
       active: store.tier !== "DISABLED",

@@ -112,7 +112,18 @@ describe(`raw-SQL timestamp writes stay correct under a non-UTC session timezone
   });
 
   it("claiming pushes nextCrawlAt far enough forward that an immediate second claim doesn't re-claim it", async () => {
-    await prisma.store.create({ data: { domain: "tz-claimed-once.com", platform: "SHOPIFY", tier: "WARM" } });
+    // Explicit backdated nextCrawlAt, not the bare @default(now()) — matching
+    // the sibling "due/not-due boundary" test above. Relying on the schema
+    // default here raced it against this test's own freshly-captured
+    // `new Date()` with zero margin: harmless in isolation, but the two
+    // independently-computed timestamps could rarely invert under real
+    // system load during a full suite run, producing a spurious empty
+    // `first` claim. This is a test-construction fix, not a production
+    // code change — claimDueStores' own SQL was never at fault (confirmed
+    // by this same test passing reliably in isolation).
+    await prisma.store.create({
+      data: { domain: "tz-claimed-once.com", platform: "SHOPIFY", tier: "WARM", nextCrawlAt: new Date(Date.now() - 1000) },
+    });
 
     const first = await claimDueStores(prisma, new Date(), 10);
     const second = await claimDueStores(prisma, new Date(), 10);

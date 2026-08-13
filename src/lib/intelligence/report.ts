@@ -1,9 +1,14 @@
 import type { PrismaClient } from "@prisma/client";
-import { unavailable, type IntelligenceField, type UnavailableField } from "../analysis/report-contract";
+import {
+  permanentlyUnavailable,
+  type IntelligenceField,
+  type UnavailableField,
+} from "../analysis/report-contract";
 import { buildFullStoreReport } from "../analysis/run-analysis";
 import type { PlanTier } from "../entitlements/plan-limits";
 import { buildGrowthReport } from "../growth/report";
 import { buildMarketingReport } from "../marketing/report";
+import { domainRegisteredAtField, firstArchivedAtField } from "../enrichment/domain-age";
 import type { StoreIntelligenceReport } from "./types";
 
 /**
@@ -38,10 +43,14 @@ export async function buildStoreIntelligenceReport(
   userId: string,
   alreadyAnalyzed: boolean,
 ): Promise<StoreIntelligenceReport> {
-  const [full, growth, marketing] = await Promise.all([
+  const [full, growth, marketing, domainAge] = await Promise.all([
     buildFullStoreReport(prisma, storeId, domain, userId, alreadyAnalyzed),
     buildGrowthReport(prisma, storeId, domain),
     buildMarketingReport(prisma, storeId, domain),
+    prisma.store.findUniqueOrThrow({
+      where: { id: storeId },
+      select: { domainRegisteredAt: true, firstArchivedAt: true },
+    }),
   ]);
 
   return {
@@ -50,6 +59,14 @@ export async function buildStoreIntelligenceReport(
       domain,
       platform: "shopify",
       theme: full.theme,
+      domainRegisteredAt: domainRegisteredAtField({
+        domainRegisteredAt: domainAge.domainRegisteredAt,
+        firstArchivedAt: domainAge.firstArchivedAt,
+      }),
+      firstArchivedAt: firstArchivedAtField({
+        domainRegisteredAt: domainAge.domainRegisteredAt,
+        firstArchivedAt: domainAge.firstArchivedAt,
+      }),
     },
     technology: {
       apps: full.apps,
@@ -68,6 +85,7 @@ export async function buildStoreIntelligenceReport(
     reviews: {
       infrastructure: growth.reviewInfrastructure,
       velocity: asPermanentlyUnavailable(full.reviewVelocity, "Review history is not yet reliably collected"),
+      coverage: growth.reviewCoverage,
     },
     commercial: {
       revenue: asPermanentlyUnavailable(full.revenue, "No validated revenue model implemented yet"),
@@ -94,7 +112,12 @@ export type { PlanTier };
  * composer's contract promises, falling back to a fresh reason string only
  * in the (currently unreachable) case that ever changes upstream, so this
  * composer never silently ships a fabricated commercial/reviews value.
+ *
+ * Always marks the result `permanent: true` — these three are not "not
+ * built yet," they're a deliberate, researched NO-GO (see
+ * docs/milestone-5-revenue-traffic-research.md's decision gate), and the
+ * card should say so rather than implying they're merely upcoming.
  */
 function asPermanentlyUnavailable<T>(field: IntelligenceField<T>, fallbackReason: string): UnavailableField {
-  return field.status === "UNAVAILABLE" ? field : unavailable(fallbackReason);
+  return field.status === "UNAVAILABLE" ? { ...field, permanent: true } : permanentlyUnavailable(fallbackReason);
 }

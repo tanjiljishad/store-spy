@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getChangeFeed } from "../change-feed";
+import { TECHNOLOGY_EVENT_TYPES } from "../event-categories";
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -116,5 +117,31 @@ describe("getChangeFeed", () => {
     const page = await getChangeFeed(prisma, store.id, {});
     expect(page.items).toHaveLength(0);
     expect(page.nextCursor).toBeNull();
+  });
+
+  it("TECHNOLOGY_EVENT_TYPES filters real technology events and excludes real product/marketing events (Milestone 7 Sub-phase C Technology stack section)", async () => {
+    const { store, crawl } = await makeStoreWithCrawl();
+    // One real event per technology category value, proving every literal
+    // in the constant is a real, correctly-spelled EventType the database
+    // actually accepts — a typo here would fail this insert, not just a
+    // type-level check.
+    for (const eventType of TECHNOLOGY_EVENT_TYPES) {
+      await makeEvent(store.id, crawl.id, { eventType });
+    }
+    // Real events from other categories that must NOT leak into the filter.
+    await makeEvent(store.id, crawl.id, { eventType: "PRODUCT_ADDED" });
+    await makeEvent(store.id, crawl.id, { eventType: "AD_DETECTED" });
+    await makeEvent(store.id, crawl.id, { eventType: "BESTSELLER_CLIMBED" });
+
+    const page = await getChangeFeed(prisma, store.id, { eventTypes: [...TECHNOLOGY_EVENT_TYPES], limit: 50 });
+
+    expect(page.items).toHaveLength(TECHNOLOGY_EVENT_TYPES.length);
+    const returnedTypes = new Set(page.items.map((i) => i.eventType));
+    for (const eventType of TECHNOLOGY_EVENT_TYPES) {
+      expect(returnedTypes.has(eventType)).toBe(true);
+    }
+    expect(returnedTypes.has("PRODUCT_ADDED")).toBe(false);
+    expect(returnedTypes.has("AD_DETECTED")).toBe(false);
+    expect(returnedTypes.has("BESTSELLER_CLIMBED")).toBe(false);
   });
 });

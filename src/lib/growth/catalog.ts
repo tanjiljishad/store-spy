@@ -20,6 +20,21 @@ import type { PrismaClient } from "@prisma/client";
  * see docs/milestone-5-growth-signals-research.md Section 3.3/7.3. This
  * makes the trend a lower bound on real catalog churn, not an exact ledger.
  *
+ * Below MIN_CRAWLS_FOR_CATALOG_TREND real crawls, sampling at real crawl
+ * dates alone isn't rich enough to be worth showing — but a single crawl
+ * already gives every current product's OWN Shopify creation date
+ * (`Product.sourceCreatedAt`, parsed from `/products.json`'s `created_at`
+ * — see diff/engine.ts's baseline handling, which backdates each product's
+ * `PRODUCT_ADDED` event the same way). `getCatalogGrowthTrend` falls back to
+ * reconstructing the curve from those launch dates instead of waiting for
+ * more crawls: `catalogSizeAt` treats a product as existing from
+ * `sourceCreatedAt ?? firstSeenAt`, so a store analyzed for the first time
+ * today can still show its catalog's growth back to when each visible
+ * product actually launched — not just a flat step at "today." Same honest
+ * limitation applies, one layer earlier: a product added AND fully removed
+ * before the first crawl is invisible either way, since no Product row for
+ * it ever existed to record a sourceCreatedAt from.
+ *
  * CRITICAL: sample dates are `Crawl.finishedAt`, never `startedAt`. Both
  * `firstSeenAt` and `missingSince` are written from the same `now` value used
  * for that crawl's `finishedAt` (see diff/persist.ts); `startedAt` is set
@@ -51,6 +66,15 @@ export interface CatalogTrendObserved {
   points: CatalogTrendPoint[];
   /** How many real crawls the trend was sampled from (bounded by MAX_CRAWLS_FOR_TREND). */
   sampledFromCrawlCount: number;
+  /**
+   * True when the curve was reconstructed from products' own Shopify launch
+   * dates (possible from a single crawl) rather than sampled across
+   * multiple real crawl snapshots. A reconstructed curve can go further
+   * back in time than this store has actually been monitored, but — like
+   * the real-crawl-sampled curve — cannot show a product that was added
+   * and fully removed before the crawl(s) it was built from.
+   */
+  reconstructedFromLaunchDates: boolean;
 }
 
 export type CatalogTrendResult = CatalogTrendInsufficientHistory | CatalogTrendObserved;
@@ -72,17 +96,30 @@ export function sampleEvenly<T>(itemsAscending: T[], maxPoints: number): T[] {
 export interface CatalogProductInput {
   firstSeenAt: Date;
   missingSince: Date | null;
+  /** Shopify's own created_at for this product, when known — see this module's doc comment. */
+  sourceCreatedAt?: Date | null;
 }
 
 export function catalogSizeAt(products: CatalogProductInput[], at: Date): number {
   const atMs = at.getTime();
   let count = 0;
   for (const p of products) {
-    if (p.firstSeenAt.getTime() > atMs) continue;
+    const existedFrom = p.sourceCreatedAt ?? p.firstSeenAt;
+    if (existedFrom.getTime() > atMs) continue;
     if (p.missingSince !== null && p.missingSince.getTime() <= atMs) continue;
     count++;
   }
   return count;
+}
+
+/** PURE. Evenly spaced Date samples from start to end inclusive (both endpoints always included). */
+export function evenlySpacedDates(start: Date, end: Date, maxPoints: number): Date[] {
+  if (maxPoints <= 0 || start.getTime() > end.getTime()) return [];
+  if (maxPoints === 1 || start.getTime() === end.getTime()) return [end];
+
+  const startMs = start.getTime();
+  const step = (end.getTime() - startMs) / (maxPoints - 1);
+  return Array.from({ length: maxPoints }, (_, i) => new Date(startMs + step * i));
 }
 
 /** PURE. crawlDates in any order; products already fetched and bounded by the caller. */
@@ -110,22 +147,44 @@ export async function getCatalogGrowthTrend(
     select: { finishedAt: true },
   });
 
-  if (crawlRows.length < MIN_CRAWLS_FOR_CATALOG_TREND) {
-    return { status: "INSUFFICIENT_HISTORY", realCrawlsAvailable: crawlRows.length };
+  if (crawlRows.length === 0) {
+    return { status: "INSUFFICIENT_HISTORY", realCrawlsAvailable: 0 };
   }
 
   const productRows = await prisma.product.findMany({
     where: { storeId },
-    select: { firstSeenAt: true, missingSince: true },
+    select: { firstSeenAt: true, missingSince: true, sourceCreatedAt: true },
     take: MAX_PRODUCTS_FOR_CATALOG_HISTORY,
   });
 
-  const points = buildCatalogTrend(
-    // finishedAt is guaranteed non-null by the where clause — see persistence.ts's identical pattern.
-    crawlRows.map((c) => c.finishedAt as Date),
-    productRows,
-    maxPoints,
-  );
+  if (crawlRows.length >= MIN_CRAWLS_FOR_CATALOG_TREND) {
+    const points = buildCatalogTrend(
+      // finishedAt is guaranteed non-null by the where clause — see persistence.ts's identical pattern.
+      crawlRows.map((c) => c.finishedAt as Date),
+      productRows,
+      maxPoints,
+    );
+    return { status: "OBSERVED", points, sampledFromCrawlCount: crawlRows.length, reconstructedFromLaunchDates: false };
+  }
 
-  return { status: "OBSERVED", points, sampledFromCrawlCount: crawlRows.length };
+  // Fewer than MIN_CRAWLS_FOR_CATALOG_TREND real crawls — reconstruct from
+  // each visible product's own Shopify launch date instead of making the
+  // user wait for more crawls. See this module's doc comment.
+  const earliestLaunch = productRows.reduce<Date | null>((min, p) => {
+    if (!p.sourceCreatedAt) return min;
+    return min === null || p.sourceCreatedAt < min ? p.sourceCreatedAt : min;
+  }, null);
+
+  if (earliestLaunch === null) {
+    // No product here carries a launch date at all (e.g. a non-Shopify
+    // source, or a store with zero currently-visible products) — nothing
+    // to reconstruct from, so fall back to the honest "not enough yet".
+    return { status: "INSUFFICIENT_HISTORY", realCrawlsAvailable: crawlRows.length };
+  }
+
+  const mostRecentCrawl = crawlRows[0].finishedAt as Date; // crawlRows is ORDER BY finishedAt desc
+  const sampleDates = evenlySpacedDates(earliestLaunch, mostRecentCrawl, maxPoints);
+  const points = sampleDates.map((at) => ({ at, size: catalogSizeAt(productRows, at) }));
+
+  return { status: "OBSERVED", points, sampledFromCrawlCount: crawlRows.length, reconstructedFromLaunchDates: true };
 }

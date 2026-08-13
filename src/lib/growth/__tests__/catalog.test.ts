@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCatalogTrend, catalogSizeAt, sampleEvenly, type CatalogProductInput } from "../catalog";
+import { buildCatalogTrend, catalogSizeAt, evenlySpacedDates, sampleEvenly, type CatalogProductInput } from "../catalog";
 
 const D = (s: string) => new Date(s);
 
@@ -54,6 +54,59 @@ describe("catalogSizeAt", () => {
     expect(catalogSizeAt(products, D("2026-03-15"))).toBe(3);
     expect(catalogSizeAt(products, D("2026-04-15"))).toBe(4);
     expect(catalogSizeAt(products, D("2026-05-15"))).toBe(3); // one went missing
+  });
+});
+
+describe("catalogSizeAt — sourceCreatedAt-aware", () => {
+  it("uses sourceCreatedAt over firstSeenAt when both are present", () => {
+    // Discovered (firstSeenAt) on a single crawl in June, but really
+    // launched on Shopify back in January — the January date must govern.
+    const products: CatalogProductInput[] = [
+      { firstSeenAt: D("2026-06-01"), missingSince: null, sourceCreatedAt: D("2026-01-01") },
+    ];
+    expect(catalogSizeAt(products, D("2026-02-01"))).toBe(1); // before firstSeenAt, after sourceCreatedAt
+    expect(catalogSizeAt(products, D("2025-12-01"))).toBe(0); // before both
+  });
+
+  it("falls back to firstSeenAt when sourceCreatedAt is absent", () => {
+    const products: CatalogProductInput[] = [{ firstSeenAt: D("2026-06-01"), missingSince: null }];
+    expect(catalogSizeAt(products, D("2026-05-01"))).toBe(0);
+    expect(catalogSizeAt(products, D("2026-06-01"))).toBe(1);
+  });
+
+  it("missingSince still excludes a product regardless of which start date was used", () => {
+    const products: CatalogProductInput[] = [
+      { firstSeenAt: D("2026-06-01"), missingSince: D("2026-08-01"), sourceCreatedAt: D("2026-01-01") },
+    ];
+    expect(catalogSizeAt(products, D("2026-07-01"))).toBe(1);
+    expect(catalogSizeAt(products, D("2026-08-01"))).toBe(0);
+  });
+});
+
+describe("evenlySpacedDates", () => {
+  it("always includes both endpoints", () => {
+    const dates = evenlySpacedDates(D("2024-01-01"), D("2026-01-01"), 12);
+    expect(dates[0].toISOString()).toBe(D("2024-01-01").toISOString());
+    expect(dates[dates.length - 1].toISOString()).toBe(D("2026-01-01").toISOString());
+  });
+
+  it("produces monotonically increasing dates", () => {
+    const dates = evenlySpacedDates(D("2024-01-01"), D("2026-01-01"), 8);
+    for (let i = 1; i < dates.length; i++) {
+      expect(dates[i].getTime()).toBeGreaterThanOrEqual(dates[i - 1].getTime());
+    }
+  });
+
+  it("collapses to a single point when start equals end", () => {
+    expect(evenlySpacedDates(D("2026-01-01"), D("2026-01-01"), 12)).toEqual([D("2026-01-01")]);
+  });
+
+  it("returns nothing when start is after end", () => {
+    expect(evenlySpacedDates(D("2026-06-01"), D("2026-01-01"), 12)).toEqual([]);
+  });
+
+  it("returns just the end date when maxPoints is 1", () => {
+    expect(evenlySpacedDates(D("2024-01-01"), D("2026-01-01"), 1)).toEqual([D("2026-01-01")]);
   });
 });
 

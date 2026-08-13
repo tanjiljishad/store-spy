@@ -4,6 +4,8 @@ import { normalizeSnapshot } from "../crawl/normalize";
 import { runDiffAndPersist } from "../diff/persist";
 import { applyCrawlFailureToStore } from "./crawl-outcome";
 import type { DnsLookup } from "../security/ssrf-guard";
+import { enrichDomainAgeIfUnknown } from "../enrichment/domain-age";
+import { collectStorefrontReviewObservations } from "../reviews/collect";
 
 /**
  * The scheduler's per-store crawl, parallel to run-analysis.ts but for a
@@ -68,6 +70,25 @@ export async function runScheduledCrawl(args: RunScheduledCrawlArgs): Promise<Sc
 
   if (outcome.result?.aborted) {
     return { outcome: "failed", reason: outcome.result.abortReason ?? "diff aborted" };
+  }
+
+  // Best-effort, after the crawl itself has already fully succeeded — a
+  // failure here must never turn a successful scheduled crawl into a
+  // reported failure. No-ops instantly on every crawl after the store's
+  // first one — see enrichDomainAgeIfUnknown's own doc comment.
+  try {
+    await enrichDomainAgeIfUnknown(prisma, store.id, store.domain, fetchImpl);
+  } catch {
+    // Swallowed deliberately — see comment above.
+  }
+
+  // Also best-effort, also never turns a successful scheduled crawl into a
+  // reported failure — but, unlike enrichDomainAgeIfUnknown, runs fresh on
+  // every crawl (review counts change over time; see reviews/collect.ts).
+  try {
+    await collectStorefrontReviewObservations(prisma, store.id, store.domain, crawlRow.id, { fetchImpl, dnsLookup });
+  } catch {
+    // Swallowed deliberately — see comment above.
   }
 
   return outcome.shortCircuited

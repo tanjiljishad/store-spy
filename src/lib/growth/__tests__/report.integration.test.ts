@@ -65,6 +65,9 @@ describe("buildGrowthReport — real Postgres, end to end", () => {
 
     expect(report.domain).toBe(store.domain);
     expect(report.catalogGrowth.currentProductCount).toBe(1);
+    // Sub-phase D: exposed so StoreActivitySummary.tsx can be seeded from
+    // this same report instead of its own separate /activity fetch.
+    expect(report.catalogGrowth.priceChanges).toBe(0);
     expect(report.reviewInfrastructure.status).toBe("OBSERVED");
     expect(report.productHighlights).toHaveLength(1);
     expect(report.productHighlights[0].handle).toBe("widget");

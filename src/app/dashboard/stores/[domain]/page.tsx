@@ -15,9 +15,11 @@ import { GrowthIntelligence } from "@/components/analysis/GrowthIntelligence";
 import { AdvertisingSummary } from "@/components/analysis/AdvertisingSummary";
 import { ChangeFeedTimeline } from "@/components/analysis/ChangeFeedTimeline";
 import { MARKETING_EVENT_TYPES } from "@/lib/marketing/event-types";
+import { TECHNOLOGY_EVENT_TYPES } from "@/lib/monitoring/event-categories";
 import { IntelligenceCard } from "@/components/dashboard/IntelligenceCard";
 import { MonitorButton } from "@/components/dashboard/MonitorButton";
 import { SectionLabel } from "@/components/dashboard/SectionLabel";
+import type { IntelligenceField } from "@/lib/analysis/report-contract";
 
 interface StoreIntelligencePageProps {
   params: Promise<{ domain: string }>;
@@ -133,59 +135,103 @@ export default async function StoreIntelligencePage({ params, searchParams }: St
         />
         <IntelligenceCard label="Apps / technologies" field={report.technology.apps} format={(v) => (v.length > 0 ? `${v.length} detected` : "None detected")} />
       </div>
-      {report.technology.apps.status === "OBSERVED" && report.technology.apps.value.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {report.technology.apps.value.map((app) => (
-            <span key={app} className="rounded-md border border-line px-3 py-1.5 font-mono text-[12.5px] text-paper">
-              {app}
-            </span>
-          ))}
-        </div>
-      )}
-      {report.technology.pixels.status === "OBSERVED" && report.technology.pixels.value.length > 0 && (
-        <div className="mt-3">
-          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-dim">Pixels</div>
-          <div className="flex flex-wrap gap-2">
-            {report.technology.pixels.value.map((pixel) => (
-              <span key={pixel} className="rounded-md border border-line px-3 py-1.5 font-mono text-[12.5px] text-paper">
-                {pixel}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      {report.technology.paymentProviders.status === "OBSERVED" && report.technology.paymentProviders.value.length > 0 && (
-        <div className="mt-3">
-          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-dim">Payment providers</div>
-          <div className="flex flex-wrap gap-2">
-            {report.technology.paymentProviders.value.map((provider) => (
-              <span key={provider} className="rounded-md border border-line px-3 py-1.5 font-mono text-[12.5px] text-paper">
-                {provider}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <IntelligenceCard
+          label="Domain registered"
+          field={report.identity.domainRegisteredAt}
+          format={(v) => new Date(v.registeredAt).toLocaleDateString("en-US", { year: "numeric", month: "long" })}
+          unavailableHint="Free public registration lookup (RDAP) — some registrars redact this."
+        />
+        <IntelligenceCard
+          label="First archived"
+          field={report.identity.firstArchivedAt}
+          format={(v) => new Date(v.firstArchivedAt).toLocaleDateString("en-US", { year: "numeric", month: "long" })}
+          unavailableHint="Earliest Wayback Machine snapshot found of this store's catalog."
+        />
+      </div>
+
+      {/* TECHNOLOGY STACK */}
+      <SectionLabel className="mt-10">Technology stack</SectionLabel>
+      <TechnologyChips apps={report.technology.apps} pixels={report.technology.pixels} paymentProviders={report.technology.paymentProviders} />
+      <div className="mt-4">
+        <ChangeFeedTimeline
+          domain={domain}
+          totalCrawls={report.monitoring.totalCrawls}
+          eventTypes={[...TECHNOLOGY_EVENT_TYPES]}
+          steadyEmptyState={{
+            headline: "No technology changes detected yet",
+            detail: "App, pixel, payment-provider, and theme changes will appear here as they're observed.",
+          }}
+        />
+      </div>
 
       {/* BUSINESS INTELLIGENCE */}
       <SectionLabel className="mt-10">Business intelligence</SectionLabel>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <IntelligenceCard
           label="Estimated revenue"
           field={report.commercial.revenue}
           format={(v) => `$${(v.minCents / 100).toLocaleString()}–$${(v.maxCents / 100).toLocaleString()}`}
+          unavailableHint="Detected instead: catalog size, average price, and catalog growth activity, below."
         />
-        <IntelligenceCard label="Estimated traffic" field={report.commercial.traffic} format={(v) => v.monthlyVisits.toLocaleString()} />
-        <IntelligenceCard label="Review velocity" field={report.reviews.velocity} format={(v) => `${v.reviewsPerMonth}/mo`} />
+        <IntelligenceCard
+          label="Estimated traffic"
+          field={report.commercial.traffic}
+          format={(v) => v.monthlyVisits.toLocaleString()}
+          unavailableHint="Detected instead: advertising activity and catalog change frequency, below."
+        />
       </div>
 
       {/* PRODUCT INTELLIGENCE / ACTIVITY */}
       <SectionLabel className="mt-10">Product activity</SectionLabel>
-      <StoreActivitySummary domain={domain} />
+      <StoreActivitySummary
+        domain={domain}
+        initialData={{
+          summary: {
+            windowDays: report.growth.windowDays,
+            productsAdded: report.growth.productsAdded,
+            productsRemoved: report.growth.productsRemoved,
+            productsRestored: report.growth.productsRestored,
+            priceChanges: report.growth.priceChanges,
+            productCountDelta: report.growth.productCountDelta,
+            hasEnoughHistory: report.growth.hasEnoughHistory,
+          },
+          signals: report.growth.signals,
+        }}
+      />
 
-      {/* GROWTH SIGNALS */}
-      <SectionLabel className="mt-10">Growth signals</SectionLabel>
-      <GrowthIntelligence domain={domain} />
+      {/* GROWTH, PRODUCT VISIBILITY & REVIEW INFRASTRUCTURE */}
+      <div className="mt-10">
+        <GrowthIntelligence
+          domain={domain}
+          // JSON round-trip: the composer's Date fields (trend points,
+          // review-infrastructure first/lastSeenAt, bestseller trajectory
+          // timestamps) must arrive shaped exactly like the /growth route's
+          // own Response.json() output (ISO strings), which is what this
+          // component's parsing logic expects regardless of which path fed
+          // it — passing raw Date objects through the RSC boundary would
+          // technically still work (Next.js serializes Date specially) but
+          // would silently diverge from the fetch path's actual wire shape.
+          initialData={JSON.parse(
+            JSON.stringify({
+              domain,
+              checkedAt: report.meta.generatedAt,
+              catalogGrowth: report.growth,
+              reviewInfrastructure: report.reviews.infrastructure,
+              productHighlights: report.productIntelligence.highlights,
+              reviewCoverage: report.reviews.coverage,
+            }),
+          )}
+        />
+      </div>
+      <div className="mt-4">
+        <IntelligenceCard
+          label="Review velocity"
+          field={report.reviews.velocity}
+          format={(v) => `${v.reviewsPerMonth}/mo`}
+          unavailableHint="Detected instead: whether a review-collection app is installed, above."
+        />
+      </div>
 
       {/* RECENT CHANGES */}
       <SectionLabel className="mt-10">Recent changes</SectionLabel>
@@ -193,7 +239,7 @@ export default async function StoreIntelligencePage({ params, searchParams }: St
 
       {/* ADVERTISING INTELLIGENCE */}
       <SectionLabel className="mt-10">Advertising intelligence</SectionLabel>
-      <AdvertisingSummary domain={domain} />
+      <AdvertisingSummary domain={domain} initialData={report.marketing} />
       <div className="mt-4">
         <ChangeFeedTimeline
           domain={domain}
@@ -205,6 +251,53 @@ export default async function StoreIntelligencePage({ params, searchParams }: St
           }}
         />
       </div>
+    </div>
+  );
+}
+
+interface TechnologyChipsProps {
+  apps: IntelligenceField<string[]>;
+  pixels: IntelligenceField<string[]>;
+  paymentProviders: IntelligenceField<string[]>;
+}
+
+/** Same chip presentation as FullReportView.tsx's identical helper — kept as two small, in-file copies rather than a shared import, matching this codebase's existing precedent of each report page owning its own small presentational helpers (see Sub-phase A research, Section 3, on FullReportView/dashboard page being independent renderers of shared child components). */
+function TechnologyChips({ apps, pixels, paymentProviders }: TechnologyChipsProps) {
+  const rows: Array<{ label: string; field: IntelligenceField<string[]> }> = [
+    { label: "Apps", field: apps },
+    { label: "Pixels", field: pixels },
+    { label: "Payment providers", field: paymentProviders },
+  ];
+  const visible = rows.filter((r) => r.field.status === "OBSERVED" && r.field.value.length > 0);
+
+  if (visible.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-line px-5 py-7 text-center">
+        <p className="font-display text-base font-bold">No technology signatures detected</p>
+        <p className="mt-1.5 font-mono text-xs text-muted-dim">
+          No known app, pixel, or payment-provider signature was found on this storefront.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {visible.map(({ label, field }) => {
+        if (field.status !== "OBSERVED") return null;
+        return (
+          <div key={label}>
+            <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-dim">{label}</div>
+            <div className="flex flex-wrap gap-2">
+              {field.value.map((v) => (
+                <span key={v} className="rounded-md border border-line px-3 py-1.5 font-mono text-[12.5px] text-paper">
+                  {v}
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

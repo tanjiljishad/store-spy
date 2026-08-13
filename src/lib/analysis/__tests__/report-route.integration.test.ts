@@ -83,7 +83,7 @@ describe("GET /api/store/[domain]/report", () => {
     // Milestone 7 Sub-phase B: the full report is now the canonical,
     // sectioned StoreIntelligenceReport shape — see intelligence/types.ts.
     expect(body.identity.theme).toEqual({ status: "OBSERVED", value: { name: "Dawn", version: null } });
-    expect(body.commercial.revenue).toEqual({ status: "UNAVAILABLE", reason: expect.any(String) });
+    expect(body.commercial.revenue).toEqual({ status: "UNAVAILABLE", reason: expect.any(String), permanent: true });
     // Zero active products — averagePrice is honestly UNAVAILABLE, not $0.00.
     expect(body.catalog.averagePrice).toEqual({ status: "UNAVAILABLE", reason: expect.any(String) });
     // New in Sub-phase B: pixels/payment providers surfaced, honestly empty here.

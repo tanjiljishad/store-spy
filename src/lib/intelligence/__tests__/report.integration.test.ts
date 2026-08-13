@@ -120,7 +120,6 @@ describe("buildStoreIntelligenceReport — section composition", () => {
     expect(report.marketing.ads.status).toBe("OBSERVED");
     if (report.marketing.ads.status !== "OBSERVED") throw new Error("unreachable");
     expect(report.marketing.ads.value).toHaveLength(1);
-    expect(report.marketing.productMatching.status).toBe("UNAVAILABLE"); // permanent, unchanged
 
     // reviews — judgeme detected as infrastructure, velocity still permanently unavailable
     expect(report.reviews.infrastructure.status).toBe("OBSERVED");
