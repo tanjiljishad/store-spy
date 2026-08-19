@@ -7,7 +7,7 @@ import { daysRemaining } from "../days-remaining";
  * Aggregates exactly what the dashboard needs — derived, presentation-ready
  * data (domains, counts, ISO dates), never raw Prisma rows. `active` is a
  * LIST, not a single watch: FREE caps it at 1 in practice, but the shape
- * doesn't assume that — BASIC can have up to 20, and this same function
+ * doesn't assume that — PAID can have up to 10, and this same function
  * serves both without a plan-specific branch.
  */
 
@@ -20,7 +20,7 @@ export interface DashboardAnalyzedStore {
 export interface DashboardActiveWatch {
   domain: string;
   startedAt: string;
-  /** null for continuous (BASIC) monitoring — no fixed end date. */
+  /** null for non-expiring monitoring. */
   expiresAt: string | null;
   /** null alongside expiresAt === null. */
   daysRemaining: number | null;

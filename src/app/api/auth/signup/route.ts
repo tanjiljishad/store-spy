@@ -55,7 +55,14 @@ export async function POST(req: NextRequest) {
       // for the same address land concurrently and only one wins the insert.
       return Response.json({ error: "An account with this email already exists." }, { status: 409 });
     }
-    throw e;
+    // Any other failure (e.g. DB unreachable) previously escaped as an
+    // uncaught exception, which Next.js turns into a bare HTML 500 page
+    // instead of JSON — AuthForm's res.json() then silently fails and the
+    // user sees a stock "Something went wrong" message with zero trace of
+    // the real cause anywhere. Log it server-side and respond in the same
+    // JSON shape every other branch of this route uses.
+    console.error("[api/auth/signup] account creation failed:", e);
+    return Response.json({ error: "Something went wrong. Please try again." }, { status: 500 });
   }
 }
 

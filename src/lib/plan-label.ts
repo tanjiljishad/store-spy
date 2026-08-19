@@ -6,8 +6,7 @@ export function planLabel(plan: PlanTier): string {
     case "FREE":
       return "Free";
     case "BASIC":
-      return "Basic";
     case "BUSINESS":
-      return "Business";
+      return "Paid";
   }
 }

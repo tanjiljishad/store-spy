@@ -217,7 +217,7 @@ function emitLimitReached(onEvent: (event: AnalysisSseEvent) => void): void {
   onEvent({
     type: "error",
     status: "analysis_limit_reached",
-    message: "You've used all 3 free store analyses. Upgrade to analyze more stores.",
+    message: "This analysis is unavailable.",
     retryable: false,
   });
 }

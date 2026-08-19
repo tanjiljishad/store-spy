@@ -422,10 +422,17 @@ export async function runDiffAndPersist(args: RunDiffArgs): Promise<RunDiffOutco
         },
       });
     },
-    // Three-to-five bulk statements, not one round trip per product — this
-    // should close in milliseconds even at a full 250-product diff. Kept
-    // well above that as headroom, not because IO volume demands it.
-    { timeout: 10_000, maxWait: 5_000 },
+    // Three-to-five bulk statements, not one round trip per product — closes
+    // in milliseconds for a typical few-hundred-product store. But at the
+    // large end of what this app actually crawls (fashionnova.com: 15,000
+    // products, 3,000 store entities, thousands of new-product events in one
+    // first crawl) a 10s budget isn't headroom, it's the wall: P2028
+    // "Transaction already closed" fired at 10,030ms in live testing, which
+    // surfaces to the user as a failed analysis even though every write
+    // would have succeeded given a few more seconds. 60s comfortably covers
+    // the largest stores seen so far without holding locks indefinitely on a
+    // genuinely stuck transaction.
+    { timeout: 60_000, maxWait: 5_000 },
   );
 
   return { shortCircuited: false, result, eventsWritten };

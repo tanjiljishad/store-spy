@@ -40,7 +40,17 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "URL is too long" }, { status: 400 });
   }
 
-  const user = await getCurrentUser();
+  let user;
+  try {
+    user = await getCurrentUser();
+  } catch (e) {
+    // Session lookup hits Prisma before the SSE stream is ever constructed —
+    // left uncaught, a DB failure here escapes as a raw Next.js 500 page
+    // instead of the JSON error shape every other early-return in this route
+    // uses, which the client can't parse (see useAnalysisStream.ts).
+    console.error("[api/analyze] session lookup failed:", e);
+    return Response.json({ error: "Something went wrong on our end. Please try again." }, { status: 500 });
+  }
   const caller = user ? { userId: user.id, plan: user.plan as PlanTier } : null;
 
   // Shared across start()/cancel() — a client disconnect (nav away, closed

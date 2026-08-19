@@ -22,7 +22,7 @@ export interface MonitorButtonProps {
  * built in Sub-phase A; this component doesn't reimplement entitlement
  * logic or hardcode a plan's limit — the limit and count are passed in
  * from the entitlement service via the page, so this same component works
- * unmodified whether the user is on FREE (limit 1) or BASIC (limit 20).
+ * unmodified whether the user is on FREE (limit 1) or PAID (limit 10).
  */
 export function MonitorButton({
   domain,
@@ -93,7 +93,9 @@ export function MonitorButton({
           Monitoring limit reached
         </span>
         <p className="mt-1.5 max-w-[34ch] font-mono text-[11px] text-muted-dim">
-          {planLabel} plan allows monitoring of {monitorLimit === 1 ? "1 store" : `up to ${monitorLimit} stores`}.
+          {planLabel === "Free"
+            ? "Free accounts can monitor 1 store. Paid accounts can monitor up to 10 stores."
+            : `${planLabel} accounts can monitor up to ${monitorLimit} stores.`}
         </p>
       </div>
     );
@@ -108,9 +110,6 @@ export function MonitorButton({
       >
         {watchStatus === "EXPIRED" ? "Resume monitoring" : "Monitor this store"}
       </button>
-      {watchStatus === "EXPIRED" && (
-        <p className="mt-1.5 font-mono text-[11px] text-muted-dim">Your 30-day free monitoring period has ended.</p>
-      )}
       {error && <p className="mt-1.5 font-mono text-[11px] text-sig-stock">{error}</p>}
     </div>
   );

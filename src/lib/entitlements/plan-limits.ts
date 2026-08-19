@@ -22,7 +22,7 @@ export type Limit = number | null;
 export interface PlanLimits {
   maxUniqueAnalyses: Limit;
   maxActiveMonitoredStores: Limit;
-  /** null = continuous monitoring, no fixed end date (BASIC). */
+  /** null = no commercial monitoring expiry. */
   monitoringDurationDays: Limit;
   /** Full free-report intelligence categories vs. the future paid-only ones. */
   historicalAccess: boolean;
@@ -30,29 +30,28 @@ export interface PlanLimits {
 }
 
 /**
- * BUSINESS numbers are a placeholder — there is no billing yet and nothing
- * in the product currently offers a path to BUSINESS. It exists so the
- * entitlement *shape* doesn't need to change again when a third tier
- * actually ships — see AGENTS.md-adjacent note in entitlement-service.ts.
+ * BASIC and BUSINESS are retained enum values for existing-data compatibility.
+ * Publicly, both map to the single future PAID offer; billing is deliberately
+ * not modeled here.
  */
 const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
   FREE: {
-    maxUniqueAnalyses: 3,
+    maxUniqueAnalyses: null,
     maxActiveMonitoredStores: 1,
-    monitoringDurationDays: 30,
+    monitoringDurationDays: null,
     historicalAccess: true,
     advancedIntelligence: false,
   },
   BASIC: {
     maxUniqueAnalyses: null, // unlimited
-    maxActiveMonitoredStores: 20,
-    monitoringDurationDays: null, // continuous — see Watchlist.monitoringExpiresAt in schema.prisma
+    maxActiveMonitoredStores: 10,
+    monitoringDurationDays: null,
     historicalAccess: true,
     advancedIntelligence: true,
   },
   BUSINESS: {
     maxUniqueAnalyses: null,
-    maxActiveMonitoredStores: 50,
+    maxActiveMonitoredStores: 10,
     monitoringDurationDays: null,
     historicalAccess: true,
     advancedIntelligence: true,

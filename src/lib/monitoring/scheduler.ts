@@ -83,9 +83,8 @@ export async function runSchedulerTick(args: SchedulerTickArgs): Promise<Schedul
   const now = args.now ?? new Date();
   const batchSize = args.batchSize ?? DEFAULT_BATCH_SIZE;
 
-  // Settle free-monitoring expirations (and the resulting tier demotions)
-  // before deciding what's due this tick — an expired watch's store should
-  // already be back at its baseline cadence by the time the claim query runs.
+  // Settle any legacy finite watches before deciding what's due. New FREE and
+  // PAID watches have no commercial expiration and are never selected here.
   const { expiredCount } = await expireDueWatches(prisma, now);
 
   const claimed = await claimDueStores(prisma, now, batchSize);

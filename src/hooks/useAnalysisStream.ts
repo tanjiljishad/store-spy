@@ -90,6 +90,12 @@ export function useAnalysisStream() {
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return;
+      // This is a real transport-level failure (fetch rejected or the
+      // stream reader threw), not a graceful server-emitted error — those
+      // are handled above via event.type === "error". Log it so the actual
+      // cause (dev server restart, dropped connection, DNS failure, etc.)
+      // is visible in devtools instead of being fully discarded.
+      console.error("[useAnalysisStream] transport error:", e);
       setState({
         view: "error",
         domain,

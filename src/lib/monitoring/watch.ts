@@ -18,10 +18,8 @@ import type { PlanTier } from "../entitlements/plan-limits";
  * crawl-outcome.ts.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 export type StartMonitoringResult =
-  | { outcome: "started"; expiresAt: Date | null } // null expiresAt = continuous (BASIC) monitoring, not an error
+  | { outcome: "started"; expiresAt: Date | null }
   | { outcome: "already_active"; expiresAt: Date | null }
   | { outcome: "limit_reached"; code: "MONITORING_LIMIT_REACHED"; capability: "MAX_ACTIVE_MONITORED_STORES" };
 
@@ -52,8 +50,10 @@ export async function startMonitoring(
       };
     }
 
+    // Monitoring scale is the commercial boundary. No current plan has a
+    // time-limited entitlement, so new watches never expire.
     const durationDays = monitoringDurationDays(plan);
-    const expiresAt = durationDays === null ? null : new Date(now.getTime() + durationDays * DAY_MS);
+    const expiresAt = durationDays === null ? null : new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
     await tx.watchlist.upsert({
       where: { userId_storeId: { userId, storeId } },
       create: { userId, storeId, monitoringStartedAt: now, monitoringExpiresAt: expiresAt, monitoringStatus: "ACTIVE" },

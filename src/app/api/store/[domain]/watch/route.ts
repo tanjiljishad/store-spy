@@ -44,7 +44,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ dom
   }
   return Response.json({
     status: "ACTIVE",
-    // null here means continuous (BASIC) monitoring — no fixed expiry, not an error.
+    // null means no commercial monitoring expiry.
     expiresAt: result.expiresAt?.toISOString() ?? null,
   });
 }

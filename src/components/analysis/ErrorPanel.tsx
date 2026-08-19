@@ -14,7 +14,7 @@ const GLYPH_BY_STATUS: Partial<Record<AnalysisStatus, { glyph: string; neutral: 
   unreachable: { glyph: "STORE UNREACHABLE", neutral: false, heading: "The store didn't respond" },
   crawl_incomplete: { glyph: "ANALYSIS INCOMPLETE", neutral: true, heading: "We couldn't collect enough from this store" },
   invalid_url: { glyph: "INVALID URL", neutral: true, heading: "That URL can't be analyzed" },
-  analysis_limit_reached: { glyph: "ANALYSIS LIMIT REACHED", neutral: true, heading: "You've used all 3 free analyses" },
+  analysis_limit_reached: { glyph: "ANALYSIS UNAVAILABLE", neutral: true, heading: "This analysis is unavailable" },
   failed: { glyph: "ANALYSIS FAILED", neutral: false, heading: "Something went wrong" },
 };
 

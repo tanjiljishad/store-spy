@@ -19,7 +19,6 @@ export default async function DashboardPage() {
   }
 
   const summary = await getDashboardSummary(prisma, user.id);
-  const remaining = summary.analyses.limit === null ? null : Math.max(0, summary.analyses.limit - summary.analyses.used);
 
   return (
     <div>
@@ -39,13 +38,13 @@ export default async function DashboardPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard
           label="Store analyses"
-          value={summary.analyses.limit === null ? `${summary.analyses.used}` : `${summary.analyses.used} / ${formatLimit(summary.analyses.limit)}`}
-          sub={summary.analyses.limit === null ? "unlimited" : "unique stores used"}
+          value={`${summary.analyses.used}`}
+          sub="unlimited store analysis"
         />
         <StatCard
-          label="Remaining"
-          value={remaining === null ? "Unlimited" : String(remaining)}
-          sub={remaining === 1 ? "analysis left" : "analyses left"}
+          label="Analysis access"
+          value="Unlimited"
+          sub="no lifetime store cap"
         />
         <StatCard
           label="Monitoring"
