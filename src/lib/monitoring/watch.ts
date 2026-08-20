@@ -77,8 +77,19 @@ export async function stopMonitoring(prisma: PrismaClient, userId: string, store
   await recomputeStoreTier(prisma, storeId);
 }
 
-/** Re-derives Store.tier from the current count of ACTIVE watches. Never touches DISABLED. */
-export async function recomputeStoreTier(prisma: PrismaClient, storeId: string): Promise<void> {
+/**
+ * Re-derives Store.tier from the current count of ACTIVE watches. Never
+ * touches DISABLED. Typed against `Pick<PrismaClient, ...>` rather than the
+ * concrete `PrismaClient` so a `tx` from inside someone else's
+ * `prisma.$transaction()` is interchangeable with the top-level client —
+ * the subscription-expiry downgrade cascade (billing/subscription-sweep.ts)
+ * calls this from inside its own transaction for exactly that reason,
+ * reusing this function rather than duplicating its logic.
+ */
+export async function recomputeStoreTier(
+  prisma: Pick<PrismaClient, "store" | "watchlist">,
+  storeId: string,
+): Promise<void> {
   const [store, activeWatchCount] = await Promise.all([
     prisma.store.findUniqueOrThrow({ where: { id: storeId }, select: { tier: true } }),
     prisma.watchlist.count({ where: { storeId, monitoringStatus: "ACTIVE" } }),

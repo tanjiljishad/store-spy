@@ -5,7 +5,9 @@ import Facebook from "next-auth/providers/facebook";
 import Google from "next-auth/providers/google";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "../db/prisma";
-import { verifyCredentials } from "./verify-credentials";
+import { authorizeCredentials } from "./authorize-credentials";
+import { getClientIp } from "../security/rate-limit";
+import { refreshJwtToken } from "./jwt-plan-refresh";
 
 /**
  * Auth.js v5, three providers unified onto the one Prisma `User` model via
@@ -18,14 +20,21 @@ import { verifyCredentials } from "./verify-credentials";
  * account-linking path the way an OAuth sign-in does, so there is no
  * adapter-managed Session row to create for it. Since this app requires
  * both Credentials and OAuth, JWT is the only configuration that supports
- * all three uniformly. The real cost: no instant server-side "sign out
- * everywhere" (a JWT is valid until it expires, not until revoked) — see
+ * all three uniformly. The real cost: no INSTANT server-side "sign out
+ * everywhere" the way revoking a database session row would give you — see
  * AGENTS.md / the Milestone 3 report for why that tradeoff was accepted.
+ * Milestone 11 closes most of the gap without switching strategies:
+ * `User.sessionsValidAfter` (checked via refreshJwtToken() below, see
+ * jwt-plan-refresh.ts) rejects any token issued before it was set, bounded
+ * by PLAN_CHECK_TTL_MS — so revocation lands within 60 seconds, not
+ * instantly, but without needing a database round trip on every single
+ * request either.
  *
  * Google/Facebook are only registered when their env vars are present, so
  * a deployment (or this sandbox) without OAuth app credentials still gets
  * a fully working Credentials flow instead of a boot-time crash.
  */
+
 
 const providers: Provider[] = [
   Credentials({
@@ -35,11 +44,12 @@ const providers: Provider[] = [
       email: { label: "Email", type: "email" },
       password: { label: "Password", type: "password" },
     },
-    async authorize(credentials) {
+    async authorize(credentials, request) {
       const email = typeof credentials?.email === "string" ? credentials.email : null;
       const password = typeof credentials?.password === "string" ? credentials.password : null;
       if (!email || !password) return null;
-      return verifyCredentials(prisma, email, password);
+
+      return authorizeCredentials(prisma, email, password, getClientIp(request.headers));
     },
   }),
 ];
@@ -89,23 +99,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   // build.
   callbacks: {
     async jwt({ token, user }) {
-      if (user) {
-        token.id = user.id;
-      }
-      if (token.id) {
-        // Plan can change between logins; re-read it each time a fresh
-        // user object isn't available so a stale JWT doesn't pin a user
-        // to a plan they've since left. Session lookups are cheap and
-        // infrequent relative to page views.
-        const dbUser = await prisma.user.findUnique({ where: { id: token.id as string }, select: { plan: true } });
-        token.plan = dbUser?.plan ?? "FREE";
-      }
-      return token;
+      if (user) token.id = user.id;
+      const refreshed = await refreshJwtToken(token, Boolean(user), (userId) =>
+        prisma.user.findUnique({ where: { id: userId }, select: { plan: true, role: true, sessionsValidAfter: true } }),
+      );
+      return refreshed as typeof token;
     },
     async session({ session, token }) {
       if (session.user && token.id) {
         session.user.id = token.id as string;
         session.user.plan = (token.plan as string) ?? "FREE";
+        session.user.role = (token.role as string) ?? "USER";
       }
       return session;
     },

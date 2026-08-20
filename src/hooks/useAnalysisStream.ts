@@ -51,7 +51,11 @@ export function useAnalysisStream() {
         } catch {
           // keep the generic message
         }
-        setState({ view: "error", domain, status: "failed", message, retryable: res.status !== 400 });
+        // 401 (anonymous caller, see this milestone's doc item 1.4) and 400
+        // (bad input) both need the caller to change something before
+        // retrying helps — a bare "Try again" would just repeat the same
+        // rejection.
+        setState({ view: "error", domain, status: "failed", message, retryable: res.status !== 400 && res.status !== 401 });
         return;
       }
 

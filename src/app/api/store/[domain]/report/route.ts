@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { canonicalizeDomain } from "@/lib/crawl/shopify";
 import { checkRateLimit, getClientIp } from "@/lib/security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
-import { hasAnalyzedStore } from "@/lib/entitlements/analysis-usage";
+import { resolveStoreAccess } from "@/lib/auth/store-access";
 import { buildStoreIntelligenceReport } from "@/lib/intelligence/report";
 import type { AnalysisReport } from "@/lib/analysis/types";
 
@@ -50,8 +50,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ doma
   }
 
   const user = await getCurrentUser();
+  const access = await resolveStoreAccess(prisma, store.id, user);
 
-  if (!user) {
+  if (access === "anonymous_preview") {
     const report: AnalysisReport = {
       access: "anonymous_preview",
       domain,
@@ -64,8 +65,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ doma
     return Response.json(report);
   }
 
-  const analyzed = await hasAnalyzedStore(prisma, user.id, store.id);
-  if (!analyzed) {
+  if (access === "unanalyzed_preview") {
     const report: AnalysisReport = {
       access: "unanalyzed_preview",
       domain,
@@ -78,6 +78,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ doma
     return Response.json(report);
   }
 
+  // access === "full" — resolveStoreAccess only ever returns this for a signed-in user.
+  if (!user) {
+    return Response.json({ error: "Unexpected access state" }, { status: 500 });
+  }
   const report = await buildStoreIntelligenceReport(prisma, store.id, domain, user.id, /* alreadyAnalyzed */ true);
   return Response.json({ access: "full" as const, ...report });
 }

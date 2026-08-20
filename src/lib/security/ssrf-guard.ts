@@ -32,7 +32,7 @@ export interface SsrfCheckResult {
   url?: URL;
 }
 
-function isPublicUnicast(ip: string): boolean {
+export function isPublicUnicast(ip: string): boolean {
   let addr: ipaddr.IPv4 | ipaddr.IPv6;
   try {
     addr = ipaddr.process(ip);
@@ -106,12 +106,22 @@ export async function checkUrlIsSafeToFetch(
 }
 
 /**
- * Known residual gap: DNS-rebinding between this check and the connection
- * undici actually makes moments later (short-TTL DNS flipping a hostname
- * from a public to a private address in that window) is not closed here —
- * doing that properly means pinning the resolved IP at the transport layer
- * (a custom fetch dispatcher), which is real additional work. This function
- * closes the common case (obviously-private domains and IPs, and unsafe
- * redirect targets, since the crawler re-runs this check on every hop)
- * rather than pretending to be airtight against a sophisticated attacker.
+ * DNS-rebinding between this check and the connection undici actually makes
+ * moments later — a short-TTL DNS answer flipping a hostname from a public
+ * to a private address in that window — is now closed, not just documented:
+ * see pinned-fetch.ts. crawl/shopify.ts's real default fetchImpl resolves
+ * and validates a hostname itself (reusing isPublicUnicast, exported above)
+ * and then binds the actual request to a custom undici Agent whose
+ * `connect.lookup` returns ONLY that already-validated address — there is
+ * no second, independent resolution left for a rebinding record to win, and
+ * every redirect hop re-pins fresh (fetchWithTimeout calls the default
+ * fetchImpl once per hop already).
+ *
+ * What still isn't, and can't be, closed by any check like this one: a host
+ * that is genuinely, persistently public (passes every check here, no
+ * rebinding involved) but is itself hostile — e.g. a public server designed
+ * to abuse a naive crawler, or a public endpoint that later redirects to
+ * attacker-controlled content within the bounds of what's allowed. That's a
+ * content-trust problem this function was never meant to solve; it only
+ * answers "is this address safe to open a TCP connection to," honestly.
  */

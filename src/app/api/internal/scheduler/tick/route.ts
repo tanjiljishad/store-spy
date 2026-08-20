@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { runSchedulerTick } from "@/lib/monitoring/scheduler";
+import { constantTimeEqual } from "@/lib/security/constant-time-equal";
 
 export const runtime = "nodejs"; // needs Prisma + real DNS resolution, not available on Edge
 
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
   }
 
   const provided = req.headers.get("x-scheduler-secret");
-  if (provided !== expected) {
+  if (!provided || !constantTimeEqual(provided, expected)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 

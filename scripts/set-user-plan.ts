@@ -7,6 +7,7 @@
  * Usage: npx tsx scripts/set-user-plan.ts user@example.com BASIC
  */
 import { prisma } from "../src/lib/db/prisma";
+import { setUserPlan } from "../src/lib/admin/users-service";
 
 const VALID_PLANS = ["FREE", "BASIC", "BUSINESS"] as const;
 
@@ -21,11 +22,15 @@ async function main() {
     process.exit(1);
   }
 
-  const user = await prisma.user.update({
-    where: { email },
-    data: { plan: plan as (typeof VALID_PLANS)[number] },
-    select: { id: true, email: true, plan: true },
-  });
+  const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+  if (!existing) {
+    console.error(`No user with email "${email}"`);
+    process.exit(1);
+  }
+
+  // Same implementation PATCH /api/admin/users/[id]/plan uses — see
+  // src/lib/admin/users-service.ts's own doc comment for why.
+  const user = await setUserPlan(prisma, existing.id, plan as (typeof VALID_PLANS)[number]);
   console.log(JSON.stringify(user, null, 2));
   await prisma.$disconnect();
 }

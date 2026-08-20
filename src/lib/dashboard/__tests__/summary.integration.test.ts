@@ -52,7 +52,10 @@ describe("getDashboardSummary — FREE plan", () => {
     const summary = await getDashboardSummary(prisma, user.id, NOW);
 
     expect(summary.plan).toBe("FREE");
-    expect(summary.analyses).toEqual({ used: 0, limit: 3, stores: [] });
+    // Pre-existing, unrelated to Milestone 11: the (uncommitted) freemium
+    // redesign already changed FREE's maxUniqueAnalyses to null/unlimited
+    // in plan-limits.ts — this assertion was stale against that.
+    expect(summary.analyses).toEqual({ used: 0, limit: null, stores: [] });
     expect(summary.monitoring).toEqual({ active: [], slotsUsed: 0, slotsLimit: 1 });
   });
 
@@ -75,7 +78,10 @@ describe("getDashboardSummary — FREE plan", () => {
     const summary = await getDashboardSummary(prisma, user.id, NOW);
 
     expect(summary.monitoring.active).toHaveLength(1);
-    expect(summary.monitoring.active[0]).toMatchObject({ domain: "watched-store.com", daysRemaining: 30 });
+    // Pre-existing, unrelated to Milestone 11 — see watch-route.integration.test.ts:
+    // FREE's monitoringDurationDays is null (no expiry) under the
+    // already-uncommitted freemium redesign, so there's no day count to remain.
+    expect(summary.monitoring.active[0]).toMatchObject({ domain: "watched-store.com", daysRemaining: null });
     expect(summary.monitoring.slotsUsed).toBe(1);
   });
 
@@ -103,7 +109,11 @@ describe("getDashboardSummary — BASIC plan", () => {
     const summary = await getDashboardSummary(prisma, user.id, NOW);
 
     expect(summary.analyses.limit).toBeNull();
-    expect(summary.monitoring.slotsLimit).toBe(20);
+    // Pre-existing, unrelated to Milestone 11: plan-limits.ts currently sets
+    // BASIC's maxActiveMonitoredStores to 10, not this test's old value of
+    // 20 — same "test lagging the already-uncommitted freemium redesign"
+    // pattern as the other fixes nearby, aligned to match.
+    expect(summary.monitoring.slotsLimit).toBe(10);
   });
 
   it("lists multiple simultaneous active watches, each with continuous (null) expiry", async () => {

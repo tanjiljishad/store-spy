@@ -8,7 +8,17 @@ import type { AnalysisSseEvent } from "@/lib/analysis/types";
 
 export const runtime = "nodejs"; // needs real DNS resolution + Prisma — not available on the Edge runtime
 
-const RATE_LIMIT = { limit: 5, windowMs: 60_000 };
+const IP_RATE_LIMIT = { limit: 5, windowMs: 60_000 };
+/**
+ * A second, independent limiter dimension keyed on userId, not IP. Each
+ * accepted request fans out to up to 60 paginated fetches against a real
+ * third-party storefront plus review-page sampling — an open outbound-
+ * request relay if the only gate is IP-based (per 1.1, that key is
+ * spoofable) and the caller can rotate IPs. userId isn't spoofable the way
+ * an IP is, so one signed-in account can't burn the crawl budget from many
+ * IPs the way it could shed a single IP-only limit.
+ */
+const USER_RATE_LIMIT = { limit: 10, windowMs: 60 * 60_000 };
 const MAX_URL_LENGTH = 2048;
 
 function sseLine(event: AnalysisSseEvent): string {
@@ -17,11 +27,40 @@ function sseLine(event: AnalysisSseEvent): string {
 
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req.headers);
-  const rate = checkRateLimit(`analyze:${ip}`, RATE_LIMIT);
-  if (!rate.allowed) {
+  const ipRate = checkRateLimit(`analyze:ip:${ip}`, IP_RATE_LIMIT);
+  if (!ipRate.allowed) {
     return Response.json(
       { error: "Too many analysis requests. Try again shortly." },
-      { status: 429, headers: { "retry-after": String(Math.ceil(rate.retryAfterMs / 1000)) } },
+      { status: 429, headers: { "retry-after": String(Math.ceil(ipRate.retryAfterMs / 1000)) } },
+    );
+  }
+
+  let user;
+  try {
+    user = await getCurrentUser();
+  } catch (e) {
+    // Session lookup hits Prisma before the SSE stream is ever constructed —
+    // left uncaught, a DB failure here escapes as a raw Next.js 500 page
+    // instead of the JSON error shape every other early-return in this route
+    // uses, which the client can't parse (see useAnalysisStream.ts).
+    console.error("[api/analyze] session lookup failed:", e);
+    return Response.json({ error: "Something went wrong on our end. Please try again." }, { status: 500 });
+  }
+
+  // Triggering a real, potentially expensive outbound crawl requires an
+  // account — see this milestone's doc, item 1.4. The anonymous PREVIEW
+  // shape (access: "anonymous_preview") still exists and is still reachable
+  // through GET /api/store/[domain]/report for a store someone else already
+  // crawled; only the ability to trigger a NEW crawl becomes authenticated.
+  if (!user) {
+    return Response.json({ error: "Sign in to analyze a store." }, { status: 401 });
+  }
+
+  const userRate = checkRateLimit(`analyze:user:${user.id}`, USER_RATE_LIMIT);
+  if (!userRate.allowed) {
+    return Response.json(
+      { error: "You've reached the hourly limit for new analyses. Try again later." },
+      { status: 429, headers: { "retry-after": String(Math.ceil(userRate.retryAfterMs / 1000)) } },
     );
   }
 
@@ -40,18 +79,7 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "URL is too long" }, { status: 400 });
   }
 
-  let user;
-  try {
-    user = await getCurrentUser();
-  } catch (e) {
-    // Session lookup hits Prisma before the SSE stream is ever constructed —
-    // left uncaught, a DB failure here escapes as a raw Next.js 500 page
-    // instead of the JSON error shape every other early-return in this route
-    // uses, which the client can't parse (see useAnalysisStream.ts).
-    console.error("[api/analyze] session lookup failed:", e);
-    return Response.json({ error: "Something went wrong on our end. Please try again." }, { status: 500 });
-  }
-  const caller = user ? { userId: user.id, plan: user.plan as PlanTier } : null;
+  const caller = { userId: user.id, plan: user.plan as PlanTier };
 
   // Shared across start()/cancel() — a client disconnect (nav away, closed
   // tab, dropped connection) invokes cancel() on a SEPARATE method of this

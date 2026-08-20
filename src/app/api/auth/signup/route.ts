@@ -15,6 +15,23 @@ export const runtime = "nodejs";
 
 const RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 
+/**
+ * Applied to the 201 (created) and 409 (already exists) outcomes only —
+ * the pair that actually leaks account existence through response timing.
+ * Both already pay the same bcrypt cost (hashPassword runs unconditionally
+ * before either branch), but the DB round trip itself (a real INSERT vs. a
+ * unique-constraint rejection) can still differ by a few ms; padding both
+ * to the same floor closes that instead of leaving it as measurement noise
+ * an attacker could average out over enough requests. The 409 status code
+ * itself is kept (see this milestone's doc, item 1.9) — removing it without
+ * building email verification would make the UX worse, not the system
+ * safer, so this closes the TIMING side of enumeration, not the existence
+ * of the 409 response itself. Accepted residual risk: an attacker can still
+ * enumerate by observing which addresses return 409 vs. 201 outright — a
+ * real gap, unresolved, called out here and in the completion report.
+ */
+const MIN_ACCOUNT_DECISION_RESPONSE_MS = 400;
+
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req.headers);
   const rate = checkRateLimit(`signup:${ip}`, RATE_LIMIT);
@@ -36,24 +53,34 @@ export async function POST(req: NextRequest) {
   if (!rawEmail || !isPlausibleEmail(rawEmail)) {
     return Response.json({ error: "Enter a valid email address." }, { status: 400 });
   }
-  if (!password || !isPasswordAcceptable(password)) {
-    return Response.json({ error: "Password must be at least 8 characters." }, { status: 400 });
+  if (!password || !isPasswordAcceptable(password, rawEmail)) {
+    return Response.json(
+      { error: "Password must be at least 10 characters, not one of the most common passwords, and not contain your email address." },
+      { status: 400 },
+    );
   }
 
   const email = normalizeEmail(rawEmail);
   const passwordHash = await hashPassword(password);
 
+  const decisionStartedAt = Date.now();
   try {
     const user = await prisma.user.create({
       data: { email, passwordHash, name },
       select: { id: true, email: true },
     });
-    return Response.json({ id: user.id, email: user.email }, { status: 201 });
+    return await respondNoFasterThan(
+      decisionStartedAt,
+      Response.json({ id: user.id, email: user.email }, { status: 201 }),
+    );
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
       // Unique violation on email — including the race where two signups
       // for the same address land concurrently and only one wins the insert.
-      return Response.json({ error: "An account with this email already exists." }, { status: 409 });
+      return await respondNoFasterThan(
+        decisionStartedAt,
+        Response.json({ error: "An account with this email already exists." }, { status: 409 }),
+      );
     }
     // Any other failure (e.g. DB unreachable) previously escaped as an
     // uncaught exception, which Next.js turns into a bare HTML 500 page
@@ -64,6 +91,14 @@ export async function POST(req: NextRequest) {
     console.error("[api/auth/signup] account creation failed:", e);
     return Response.json({ error: "Something went wrong. Please try again." }, { status: 500 });
   }
+}
+
+async function respondNoFasterThan(startedAt: number, response: Response): Promise<Response> {
+  const elapsed = Date.now() - startedAt;
+  if (elapsed < MIN_ACCOUNT_DECISION_RESPONSE_MS) {
+    await new Promise((resolve) => setTimeout(resolve, MIN_ACCOUNT_DECISION_RESPONSE_MS - elapsed));
+  }
+  return response;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -458,6 +458,20 @@ enum PlanTier {
   BUSINESS
 }
 
+/// Coarse admin roles — fine-grained access is Permission (src/lib/admin/roles.ts),
+/// never a raw role-string comparison in route/service code. SUPER_ADMIN is
+/// bootstrap-only (scripts/grant-admin.ts); no HTTP route can grant it — see
+/// PATCH /api/admin/users/[id]/role's own invariant checks.
+enum Role {
+  USER
+  ANALYST
+  CONTENT_ADMIN
+  SUPPORT_ADMIN
+  BILLING_ADMIN
+  OPS_ADMIN
+  SUPER_ADMIN
+}
+
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
@@ -468,6 +482,15 @@ model User {
   /// signup path, hashed with bcrypt — never stored or logged raw.
   passwordHash  String?
   plan          PlanTier  @default(FREE)
+  role          Role      @default(USER)
+  /// A JWT issued before this timestamp is rejected by the `jwt` callback
+  /// (see auth.ts) even if it hasn't expired — the real "sign out
+  /// everywhere" / compromised-account kill switch that JWT sessions
+  /// otherwise can't offer (session strategy is JWT, not database; see
+  /// auth.ts's own doc comment for why). Null means no floor: every
+  /// existing token is still valid. Set via POST
+  /// /api/admin/users/[id]/revoke-sessions in Phase 2.
+  sessionsValidAfter DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -475,6 +498,51 @@ model User {
   sessions      Session[]
   watchlists    Watchlist[]
   analysisUsage AnalysisUsage[]
+
+  @@index([role])
+}
+
+/// Append-only, in the same transaction as the change it records (see
+/// recordAdminAction() in src/lib/admin/audit.ts) — if the audit write
+/// fails, the change it was recording rolls back with it. No update or
+/// delete path exists anywhere in the code; `actorEmail` is denormalized
+/// on purpose so the log stays readable even after the actor's own User
+/// row is later deleted.
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  actorEmail String
+  action     String
+  targetType String
+  targetId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+}
+
+/// One row per credentials-login attempt, success or failure — the durable,
+/// shared-across-instances backing store for login-throttle.ts. Deliberately
+/// NOT the in-memory rate limiter (rate-limit.ts): lockout state must
+/// survive a process restart and be visible to every instance, which an
+/// in-memory Map by definition cannot do. Tracked per email AND per IP
+/// independently (see login-policy.ts) since a shared NAT makes per-IP
+/// thresholds necessarily looser than per-account ones. Append-only by
+/// design — a successful login clears the offending rows rather than
+/// leaving them to accumulate, but nothing here is ever UPDATEd.
+model LoginAttempt {
+  id              String   @id @default(cuid())
+  /// Null when the submitted email was missing/malformed — see
+  /// login-throttle.ts. normalizeEmail()'d, matching User.email.
+  emailNormalized String?
+  /// getClientIp()'s output — "unknown" is a legitimate, if coarse, shared bucket.
+  ipKey           String?
+  succeeded       Boolean
+  createdAt       DateTime @default(now())
+
+  @@index([emailNormalized, createdAt])
+  @@index([ipKey, createdAt])
 }
 
 /// One row per linked OAuth identity (Google, Facebook, ...). A single User
@@ -710,4 +778,142 @@ model AdObservation {
   @@unique([storeId, platform, externalAdId])
   @@index([storeId, status])
   @@index([matchedProductId])
+}
+
+// ---------------------------------------------------------------------------
+// Billing — promo codes and checkout (Milestone 11, Phase 3)
+//
+// There is no payment provider in this repo — see billing/checkout.ts's own
+// doc comment for the marked PROVIDER SEAM. Every model here must still be
+// fully correct for the zero-provider path (a 100%-off promo), since that
+// path is the one thing this phase makes fully functional end to end.
+// ---------------------------------------------------------------------------
+
+enum DiscountType {
+  PERCENT
+  FIXED
+}
+
+enum PromoStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum CheckoutStatus {
+  PENDING
+  COMPLETED
+  EXPIRED
+  FAILED
+}
+
+enum SubscriptionSource {
+  PROMO
+  PROVIDER
+  MANUAL
+}
+
+/// ACTIVE until swept past its own expiresAt (or manually superseded).
+/// EXPIRED is terminal — see expireDueSubscriptions() in
+/// billing/subscription-sweep.ts. Needed as its own field (not just a null
+/// check on expiresAt) because a null-expiry (perpetual) Subscription is
+/// still meaningfully ACTIVE forever and must never be swept.
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+}
+
+/// Immutable after creation — see promo.ts's own doc comment on why a
+/// redemption row's recorded amounts must always be reconcilable against
+/// terms that never changed out from under it. To change terms, disable and
+/// mint a new code.
+model PromoCode {
+  id     String       @id @default(cuid())
+  /// Normalized (uppercase, no whitespace/dashes) — see promo-code.ts. The
+  /// unique index is on this normalized form so "abc-def" and "ABCDEF"
+  /// can never both exist as distinct rows.
+  code   String       @unique
+  discountType  DiscountType
+  /// PERCENT: integer 1-100. FIXED: integer cents, >= 1.
+  discountValue Int
+  /// Null means valid against any plan.
+  appliesToPlan PlanTier?
+  /// Null means unlimited total redemptions.
+  maxRedemptions Int?
+  perUserLimit   Int    @default(1)
+  validFrom  DateTime
+  validUntil DateTime?
+  status     PromoStatus @default(ACTIVE)
+  /// Set only for a promo minted for one specific person — see promo.ts's
+  /// not_assigned_to_you handling (masked as not_found at the route layer).
+  assignedToUserId String?
+  createdByUserId  String
+  /// Milestone 11 Phase 3 §3.4 amendment: how long the GRANTED plan lasts,
+  /// carried to Subscription.expiresAt at redemption. Null is perpetual —
+  /// deliberately not a default that falls out of omission: an admin must
+  /// choose explicitly (see the admin promo-creation route), because a
+  /// promo that grants a plan forever by accident is a real revenue leak,
+  /// not a convenience.
+  durationDays Int?
+  createdAt DateTime @default(now())
+
+  redemptions PromoRedemption[]
+
+  @@index([status])
+  @@index([assignedToUserId])
+}
+
+/// One row per successful redemption. Append-only — the whole point of
+/// keeping PromoCode immutable is that this row's recorded amounts can
+/// always be reconciled against it later.
+model PromoRedemption {
+  id            String   @id @default(cuid())
+  promoCodeId   String
+  promoCode     PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  userId        String
+  checkoutId    String?
+  listPriceCents Int
+  discountCents  Int
+  finalCents     Int
+  createdAt DateTime @default(now())
+
+  @@unique([promoCodeId, userId])
+  @@index([promoCodeId])
+}
+
+model Checkout {
+  id             String         @id @default(cuid())
+  userId         String
+  plan           PlanTier
+  period         String
+  promoCodeId    String?
+  listPriceCents Int
+  discountCents  Int
+  finalCents     Int
+  status         CheckoutStatus @default(PENDING)
+  createdAt      DateTime       @default(now())
+  completedAt    DateTime?
+
+  @@index([userId])
+  @@index([status, createdAt])
+}
+
+/// The billing-relationship record a promo grant (or, later, a real
+/// provider subscription) creates. `status`/`expiresAt` are read by
+/// expireDueSubscriptions() (billing/subscription-sweep.ts, run from the
+/// worker tick) — a perpetual grant (expiresAt: null) is simply never
+/// matched by that sweep's query, the same NULL-comparison behavior
+/// monitoring/watch.ts's expireDueWatches() already relies on for FREE's
+/// non-expiring monitor.
+model Subscription {
+  id        String             @id @default(cuid())
+  userId    String
+  plan      PlanTier
+  source    SubscriptionSource
+  status    SubscriptionStatus @default(ACTIVE)
+  startedAt DateTime           @default(now())
+  expiresAt DateTime?
+  createdAt DateTime           @default(now())
+
+  @@index([userId])
+  @@index([status, expiresAt])
 }

@@ -59,7 +59,13 @@ async function makeProducts(storeId: string, count: number) {
   });
 }
 
-const NOW = new Date("2026-08-11T12:00:00Z");
+// Pre-existing, unrelated to Milestone 11: this was a hardcoded past literal
+// ("2026-08-11"). getActivitySummary() has no injectable clock — it always
+// queries against the REAL current time — so every `days(n)` offset below
+// is only valid relative to whatever "now" actually is when the suite runs.
+// A fixed literal silently drifts out of the 7-day window it's meant to
+// test as real time passes it by; `new Date()` never can.
+const NOW = new Date();
 const days = (n: number) => new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000);
 
 describe("getActivitySummary — hasEnoughHistory gating", () => {

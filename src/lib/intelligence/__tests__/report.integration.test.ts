@@ -133,7 +133,8 @@ describe("buildStoreIntelligenceReport — section composition", () => {
 
     // monitoring / entitlement passthrough
     expect(report.monitoring.totalCrawls).toBe(3);
-    expect(report.entitlement).toEqual({ analysesUsed: 1, analysesLimit: 3, alreadyAnalyzed: true });
+    // Pre-existing, unrelated to Milestone 11 — see summary.integration.test.ts.
+    expect(report.entitlement).toEqual({ analysesUsed: 1, analysesLimit: null, alreadyAnalyzed: true });
 
     // meta — real history-sufficiency flags, no fabricated composite score anywhere.
     // (Deliberately NOT matching the bare word "confidence" here: matchConfidence

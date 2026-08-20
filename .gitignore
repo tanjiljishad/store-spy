@@ -3,3 +3,4 @@ node_modules/
 .env.test
 .next/
 next-env.d.ts
+*.zip

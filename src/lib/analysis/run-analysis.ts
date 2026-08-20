@@ -55,11 +55,14 @@ export async function runAnalysis(args: RunAnalysisArgs): Promise<void> {
     return;
   }
 
-  const store = await prisma.store.upsert({
-    where: { domain },
-    create: { domain, platform: "SHOPIFY" },
-    update: {},
-  });
+  // Deliberately a lookup, not an upsert: creating the Store row here —
+  // before the crawl has even proven this domain is a real, reachable
+  // Shopify store — was a real bug (this milestone's doc, item 1.5).
+  // Store.tier defaults to COLD and nextCrawlAt to now(), so every junk
+  // domain (typos, non-Shopify sites, dead domains) immediately entered the
+  // scheduler's due-query and stayed there forever. The Store row is now
+  // created ONLY after crawlShopifyStore returns status: "ok", below.
+  const existingStore = await prisma.store.findUnique({ where: { domain }, select: { id: true } });
 
   // Entitlement pre-check: cheap and read-only, purely to fail fast for a
   // caller who's obviously already at their limit — a request that's going
@@ -68,8 +71,12 @@ export async function runAnalysis(args: RunAnalysisArgs): Promise<void> {
   // reads, it never records, so it introduces no race condition to worry
   // about. Anonymous callers (caller === null) skip this entirely — the
   // crawl still runs and benefits the shared corpus, same as it always has.
+  // A domain with no Store row yet has never been analyzed by ANYONE, so
+  // "already analyzed by THIS user" is trivially false — skip the
+  // store-specific hasAnalyzedStore lookup (there's no store.id to check
+  // against) and compare the user's raw usage count directly instead.
   if (caller) {
-    const analyzed = await hasAnalyzedStore(prisma, caller.userId, store.id);
+    const analyzed = existingStore ? await hasAnalyzedStore(prisma, caller.userId, existingStore.id) : false;
     if (!analyzed) {
       const usage = await getAnalysisUsage(prisma, caller.userId);
       if (!isUnderLimit(usage.used, usage.limit)) {
@@ -79,21 +86,30 @@ export async function runAnalysis(args: RunAnalysisArgs): Promise<void> {
     }
   }
 
-  const recentRunning = await prisma.crawl.findFirst({
-    where: { storeId: store.id, status: "RUNNING", startedAt: { gte: new Date(Date.now() - DEDUP_WINDOW_MS) } },
-    orderBy: { startedAt: "desc" },
-  });
-  if (recentRunning) {
-    onEvent({
-      type: "error",
-      status: "failed",
-      message: "An analysis for this store is already in progress. Try again in a moment.",
-      retryable: true,
+  // Dedup: only meaningful when a Store row already exists — a domain with
+  // none can't possibly have an in-flight crawl to collide with. This also
+  // means a brand-new domain's Crawl row (created below, only after a
+  // successful detection) can't yet serve as a RUNNING marker during the
+  // crawl itself — an accepted, narrow race (two simultaneous first-ever
+  // requests for the exact same never-seen domain) traded for never writing
+  // a Store/Crawl row for a domain that turns out not to be Shopify at all.
+  let crawlRow: { id: string } | null = null;
+  if (existingStore) {
+    const recentRunning = await prisma.crawl.findFirst({
+      where: { storeId: existingStore.id, status: "RUNNING", startedAt: { gte: new Date(Date.now() - DEDUP_WINDOW_MS) } },
+      orderBy: { startedAt: "desc" },
     });
-    return;
+    if (recentRunning) {
+      onEvent({
+        type: "error",
+        status: "failed",
+        message: "An analysis for this store is already in progress. Try again in a moment.",
+        retryable: true,
+      });
+      return;
+    }
+    crawlRow = await prisma.crawl.create({ data: { storeId: existingStore.id, status: "RUNNING" } });
   }
-
-  const crawlRow = await prisma.crawl.create({ data: { storeId: store.id, status: "RUNNING" } });
 
   onEvent({ type: "status", status: "shopify_detection" });
 
@@ -112,23 +128,44 @@ export async function runAnalysis(args: RunAnalysisArgs): Promise<void> {
 
   if (crawlResult.status !== "ok") {
     const { status, message } = classifyCrawlFailure(crawlResult);
-    const failedAt = new Date();
-    await prisma.crawl.update({
-      where: { id: crawlRow.id },
-      data: {
-        status: crawlResult.status === "blocked" ? "BLOCKED" : "FAILED",
-        finishedAt: failedAt,
-        // Internal diagnostic detail stays in the database; the client gets
-        // the curated message below, never this raw string.
-        errorMessage: crawlResult.reason,
-      },
-    });
-    // Same backoff/demotion path a scheduled crawl's failure takes — a
-    // store that keeps failing manual analysis is exactly as unmonitorable
-    // as one that keeps failing on a timer.
-    await applyCrawlFailureToStore(prisma, store.id, failedAt);
+    // Only a store that already existed (and therefore already has a
+    // RUNNING Crawl row from above) gets its failure recorded — a brand-new
+    // domain that fails detection leaves zero Store/Crawl rows behind,
+    // by design.
+    if (existingStore && crawlRow) {
+      const failedAt = new Date();
+      await prisma.crawl.update({
+        where: { id: crawlRow.id },
+        data: {
+          status: crawlResult.status === "blocked" ? "BLOCKED" : "FAILED",
+          finishedAt: failedAt,
+          // Internal diagnostic detail stays in the database; the client gets
+          // the curated message below, never this raw string.
+          errorMessage: crawlResult.reason,
+        },
+      });
+      // Same backoff/demotion path a scheduled crawl's failure takes — a
+      // store that keeps failing manual analysis is exactly as unmonitorable
+      // as one that keeps failing on a timer.
+      await applyCrawlFailureToStore(prisma, existingStore.id, failedAt);
+    }
     onEvent({ type: "error", status, message, retryable: status === "unreachable" });
     return;
+  }
+
+  // Crawl succeeded — NOW it's safe to create the Store row for a brand-new
+  // domain. upsert() is still idempotent/correct for an already-existing
+  // one (a plain create() would conflict on the unique domain).
+  const store =
+    existingStore ??
+    (await prisma.store.upsert({
+      where: { domain },
+      create: { domain, platform: "SHOPIFY" },
+      update: {},
+      select: { id: true },
+    }));
+  if (!crawlRow) {
+    crawlRow = await prisma.crawl.create({ data: { storeId: store.id, status: "RUNNING" } });
   }
 
   const snapshot = normalizeSnapshot(crawlResult.input);

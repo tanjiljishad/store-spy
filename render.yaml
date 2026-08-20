@@ -38,6 +38,11 @@ services:
         value: production
       - key: AUTH_TRUST_HOST
         value: "true"
+      # Not a secret — how many x-forwarded-for entries (from the right) come
+      # from proxies actually in front of this service. Render puts exactly
+      # one. See docs/environment-variables.md and rate-limit.ts.
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
       - key: DATABASE_URL
         sync: false
       - key: AUTH_SECRET

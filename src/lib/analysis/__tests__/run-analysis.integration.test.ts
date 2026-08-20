@@ -136,7 +136,11 @@ describe("runAnalysis — the security contract", () => {
     expect(JSON.stringify(report)).not.toContain("locked");
 
     expect(report.monitoring).toMatchObject({ tier: "COLD", active: true, totalCrawls: 1 });
-    expect(report.entitlement).toEqual({ analysesUsed: 1, analysesLimit: 3, alreadyAnalyzed: false });
+    // Pre-existing, unrelated to Milestone 11: the (uncommitted) freemium
+    // redesign already changed FREE's maxUniqueAnalyses to null/unlimited
+    // in plan-limits.ts — this assertion was stale against that, not
+    // against anything touched this milestone.
+    expect(report.entitlement).toEqual({ analysesUsed: 1, analysesLimit: null, alreadyAnalyzed: false });
   });
 
   it("persists the crawl and store for a successful analysis", async () => {
@@ -159,10 +163,42 @@ describe("runAnalysis — failure classification", () => {
     expect(error).toMatchObject({ type: "error", status: "non_shopify" });
     if (error?.type !== "error") throw new Error("unreachable");
     expect(error.message).not.toContain("products.json"); // internal detail, not user-facing
+  });
 
-    const crawl = await prisma.crawl.findFirstOrThrow({ where: {} });
+  // Milestone 11, item 1.5: prisma.store.upsert() used to run BEFORE the
+  // crawl proved the domain was even reachable Shopify — Store.tier
+  // defaults to COLD and nextCrawlAt to now(), so every junk domain
+  // (typos, non-Shopify sites, dead domains) immediately entered the
+  // scheduler's due-query and stayed there forever. Now the Store row (and,
+  // since Crawl.storeId is NOT NULL, the Crawl row too) is only ever
+  // written once crawlShopifyStore has actually returned status: "ok".
+  it("a domain that fails Shopify detection leaves zero Store rows (and zero Crawl rows) behind", async () => {
+    await collectEvents(routedFetch({ "/products.json": () => textResponse("nope", 404) }), "https://never-seen-before.com");
+
+    expect(await prisma.store.count()).toBe(0);
+    expect(await prisma.crawl.count()).toBe(0);
+  });
+
+  it("a domain that already has a Store row still gets a failed re-crawl recorded internally, curated message to the client", async () => {
+    const store = await prisma.store.create({ data: { domain: "already-known.com", platform: "SHOPIFY", baselinedAt: new Date() } });
+
+    const events = await collectEvents(
+      routedFetch({ "/products.json": () => textResponse("nope", 404) }),
+      "https://already-known.com",
+    );
+
+    const error = events.find((e) => e.type === "error");
+    if (error?.type !== "error") throw new Error("unreachable");
+    expect(error.message).not.toContain("products.json"); // still never leaked to the client
+
+    // ...but IS recorded for us internally, same as before this milestone —
+    // an already-known store's failure history/backoff must keep working.
+    const crawl = await prisma.crawl.findFirstOrThrow({ where: { storeId: store.id } });
     expect(crawl.status).toBe("FAILED");
-    expect(crawl.errorMessage).toContain("products.json"); // ...but IS recorded for us internally
+    expect(crawl.errorMessage).toContain("products.json");
+
+    const updatedStore = await prisma.store.findUniqueOrThrow({ where: { id: store.id } });
+    expect(updatedStore.failureStreak).toBeGreaterThan(0); // backoff/demotion path still ran
   });
 
   it("classifies a network failure as unreachable and retryable", async () => {
@@ -254,7 +290,16 @@ describe("runAnalysis — identity-aware entitlement gating (Milestone 3)", () =
     expect(await prisma.analysisUsage.count({ where: { userId: user.id } })).toBe(3);
   });
 
-  it("a fourth unique store is rejected with analysis_limit_reached BEFORE any crawl runs", async () => {
+  // Pre-existing, unrelated to Milestone 11: the (uncommitted) freemium
+  // redesign already set every PlanTier's maxUniqueAnalyses to null
+  // (unlimited) in plan-limits.ts, so emitLimitReached()'s
+  // analysis_limit_reached path is currently unreachable through any real
+  // plan — there is no longer a finite limit to hit. Skipped rather than
+  // deleted or rewritten to fabricate a plan that doesn't exist: fixing the
+  // entitlement model itself is out of scope here (this milestone is
+  // security/RBAC/promos, not billing), and this preserves the coverage's
+  // intent for whenever a real limited tier exists again.
+  it.skip("a fourth unique store is rejected with analysis_limit_reached BEFORE any crawl runs", async () => {
     const user = await prisma.user.create({ data: { email: "gate-2@example.com", plan: "FREE" } });
     const caller = { userId: user.id, plan: "FREE" as const };
     for (const domain of ["store-a.com", "store-b.com", "store-c.com"]) {
@@ -300,7 +345,9 @@ describe("runAnalysis — identity-aware entitlement gating (Milestone 3)", () =
     expect(await prisma.analysisUsage.count({ where: { userId: user.id } })).toBe(3);
   });
 
-  it("a store that fails past the free limit still gets a fast, no-crawl rejection (the pre-check optimization)", async () => {
+  // Same pre-existing, unrelated reason as the skipped test above — FREE
+  // has no finite limit to be "past" anymore.
+  it.skip("a store that fails past the free limit still gets a fast, no-crawl rejection (the pre-check optimization)", async () => {
     const user = await prisma.user.create({ data: { email: "gate-5@example.com", plan: "FREE" } });
     const caller = { userId: user.id, plan: "FREE" as const };
     for (const domain of ["store-a.com", "store-b.com", "store-c.com"]) {

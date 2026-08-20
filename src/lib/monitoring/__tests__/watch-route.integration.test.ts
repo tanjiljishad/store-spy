@@ -87,7 +87,11 @@ describe("POST /api/store/[domain]/watch", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("ACTIVE");
-    expect(body.expiresAt).toBeTruthy();
+    // Pre-existing, unrelated to Milestone 11: the (uncommitted) freemium
+    // redesign already set FREE's monitoringDurationDays to null/no-expiry
+    // in plan-limits.ts (watch.ts reads it directly) — this assertion was
+    // stale against that, expecting the old ~30-day expiry model.
+    expect(body.expiresAt).toBeNull();
   });
 
   it("returns the structured entitlement-denied shape, not a raw 500, once the free slot is used", async () => {
@@ -121,10 +125,12 @@ describe("POST /api/store/[domain]/watch", () => {
     expect(res.status).toBe(200);
 
     const watch = await prisma.watchlist.findUniqueOrThrow({ where: { userId_storeId: { userId: user.id, storeId: store.id } } });
-    // Real 30-day FREE-plan duration from the server clock, not the attacker-supplied 2099 date.
-    const daysUntilExpiry = Math.round((watch.monitoringExpiresAt!.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
-    expect(daysUntilExpiry).toBeGreaterThanOrEqual(29);
-    expect(daysUntilExpiry).toBeLessThanOrEqual(30);
+    // Pre-existing, unrelated to Milestone 11 — see the test above: FREE's
+    // monitoringDurationDays is null (no expiry) under the already-uncommitted
+    // freemium redesign, not the old ~30-day duration. The real point this
+    // test is making — the attacker-supplied 2099 date is ignored — still
+    // holds: it's server-computed null, never the spoofed value.
+    expect(watch.monitoringExpiresAt).toBeNull();
     expect(watch.userId).toBe(user.id); // never the spoofed "someone-elses-id"
   });
 

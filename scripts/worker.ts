@@ -32,6 +32,9 @@ import { runSchedulerTick } from "../src/lib/monitoring/scheduler";
 import { runMarketingSchedulerTick } from "../src/lib/marketing/scheduler";
 import { getConfiguredMarketingSource } from "../src/lib/marketing/source-factory";
 import { sweepStaleCrawls } from "../src/lib/monitoring/stale-crawl-sweep";
+import { sweepOldLoginAttempts } from "../src/lib/security/login-attempt-sweep";
+import { expireDueSubscriptions } from "../src/lib/billing/subscription-sweep";
+import { expirePendingCheckouts } from "../src/lib/billing/checkout";
 
 /**
  * How often the worker checks for due work. Chosen relative to two real
@@ -115,6 +118,34 @@ async function runOneCycle(): Promise<void> {
     log("stale_crawl_sweep.completed", { durationMs: Date.now() - sweepStart, recovered: result.recovered });
   } catch (e) {
     logError("stale_crawl_sweep.failed", e);
+  }
+
+  try {
+    const sweepStart = Date.now();
+    const result = await sweepOldLoginAttempts(prisma);
+    log("login_attempt_sweep.completed", { durationMs: Date.now() - sweepStart, deleted: result.deleted });
+  } catch (e) {
+    logError("login_attempt_sweep.failed", e);
+  }
+
+  try {
+    const sweepStart = Date.now();
+    const result = await expireDueSubscriptions(prisma);
+    log("subscription_expiry_sweep.completed", {
+      durationMs: Date.now() - sweepStart,
+      expired: result.expiredCount,
+      watchesExpired: result.watchesExpiredCount,
+    });
+  } catch (e) {
+    logError("subscription_expiry_sweep.failed", e);
+  }
+
+  try {
+    const sweepStart = Date.now();
+    const result = await expirePendingCheckouts(prisma);
+    log("pending_checkout_sweep.completed", { durationMs: Date.now() - sweepStart, expired: result.expiredCount });
+  } catch (e) {
+    logError("pending_checkout_sweep.failed", e);
   }
 
   log("worker.cycle_completed", { durationMs: Date.now() - cycleStart });

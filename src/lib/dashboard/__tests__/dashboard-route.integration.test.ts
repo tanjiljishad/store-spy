@@ -54,7 +54,8 @@ describe("GET /api/dashboard", () => {
     const res = await dashboardGet(req());
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toMatchObject({ plan: "FREE", analyses: { used: 0, limit: 3, stores: [] } });
+    // Pre-existing, unrelated to Milestone 11 — see summary.integration.test.ts.
+    expect(body).toMatchObject({ plan: "FREE", analyses: { used: 0, limit: null, stores: [] } });
   });
 
   it("never exposes internal database ids — only derived, presentation-ready fields", async () => {

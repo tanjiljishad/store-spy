@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { runMarketingSchedulerTick } from "@/lib/marketing/scheduler";
 import { getConfiguredMarketingSource } from "@/lib/marketing/source-factory";
+import { constantTimeEqual } from "@/lib/security/constant-time-equal";
 
 export const runtime = "nodejs";
 
@@ -20,7 +21,7 @@ export async function POST(req: NextRequest) {
   }
 
   const provided = req.headers.get("x-scheduler-secret");
-  if (provided !== expected) {
+  if (!provided || !constantTimeEqual(provided, expected)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 

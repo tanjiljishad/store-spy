@@ -1,5 +1,7 @@
 "use client";
 
+import { PromoRedemption } from "./PromoRedemption";
+
 const TIERS = [
   {
     name: "Free",
@@ -70,6 +72,11 @@ export function PricingSection({ onPlanSelected }: PricingSectionProps) {
             </div>
           ))}
         </div>
+
+        {/* Checkout itself isn't built yet (no payment provider — see the
+            PROVIDER SEAM in billing/checkout.ts), but a promo code that
+            covers the full price works right now, end to end. */}
+        <PromoRedemption />
 
         <p className="mt-7 text-center font-mono text-[11.5px] text-muted-dim">
           Analyzes publicly observable storefront data only · responsible crawl rates · no access to any merchant&apos;s private admin

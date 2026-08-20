@@ -30,8 +30,16 @@ const runAnalysisMock = vi.fn(async ({ onEvent }: { onEvent: (e: unknown) => voi
 vi.mock("@/lib/analysis/run-analysis", () => ({
   runAnalysis: (...args: Parameters<typeof runAnalysisMock>) => runAnalysisMock(...args),
 }));
+// Defaults to a signed-in user — POST /api/analyze requires one (this
+// milestone's doc, item 1.4). The anonymous case gets its own describe
+// block below, which overrides this per-test.
+const getCurrentUserMock = vi.fn<() => Promise<{ id: string; email: string; plan: "FREE" } | null>>(async () => ({
+  id: "user-1",
+  email: "user@example.com",
+  plan: "FREE",
+}));
 vi.mock("@/lib/auth/session", () => ({
-  getCurrentUser: async () => null,
+  getCurrentUser: () => getCurrentUserMock(),
 }));
 vi.mock("@/lib/db/prisma", () => ({ prisma: {} }));
 
@@ -41,6 +49,8 @@ const { _resetRateLimitState } = await import("../../security/rate-limit");
 beforeEach(() => {
   _resetRateLimitState();
   runAnalysisMock.mockClear();
+  getCurrentUserMock.mockClear();
+  getCurrentUserMock.mockResolvedValue({ id: "user-1", email: "user@example.com", plan: "FREE" });
   releaseSecondEvent = null;
 });
 
@@ -102,5 +112,40 @@ describe("POST /api/analyze — SSE stream cancellation safety", () => {
     expect(text).toContain('"status":"validating"');
     expect(text).toContain('"phase":"fetching_products"');
     expect(text).toContain('"status":"complete"');
+  });
+});
+
+describe("POST /api/analyze — requires a signed-in caller", () => {
+  it("returns 401 for an anonymous caller and never invokes runAnalysis", async () => {
+    getCurrentUserMock.mockResolvedValue(null);
+
+    const res = await POST(req());
+
+    expect(res.status).toBe(401);
+    expect(runAnalysisMock).not.toHaveBeenCalled();
+  });
+
+  it("still succeeds for a signed-in caller", async () => {
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    releaseSecondEvent!();
+  });
+
+  it("rate-limits by userId (10/hour), independent of the per-IP limiter", async () => {
+    // Each request uses a fresh IP, so only the userId dimension can be
+    // what eventually blocks these — proving it exists as its own limiter,
+    // not just riding on the IP one.
+    let lastStatus = 0;
+    for (let i = 0; i < 11; i++) {
+      const request = new NextRequest("http://localhost/api/analyze", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": `203.0.113.${100 + i}` },
+        body: JSON.stringify({ url: "https://example.com" }),
+      });
+      const res = await POST(request);
+      lastStatus = res.status;
+      if (res.status === 200) releaseSecondEvent?.();
+    }
+    expect(lastStatus).toBe(429);
   });
 });

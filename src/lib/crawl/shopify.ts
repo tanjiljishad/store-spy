@@ -3,6 +3,7 @@ import type { NormalizeInput } from "./normalize";
 import type { NormalizedTech } from "./types";
 import { fingerprintTech } from "./fingerprint";
 import { checkUrlIsSafeToFetch, type DnsLookup } from "../security/ssrf-guard";
+import { createAutoPinnedFetch } from "../security/pinned-fetch";
 
 /**
  * Fetches a Shopify storefront's public JSON endpoints and hands back a
@@ -97,8 +98,13 @@ export async function crawlShopifyStore(
   opts: CrawlOptions = {},
 ): Promise<CrawlResult> {
   const domain = canonicalizeDomain(domainInput);
-  const fetchImpl = opts.fetchImpl ?? fetch;
   const dnsLookup = opts.dnsLookup;
+  // No injected fetchImpl means this is real production use, not a test
+  // (every existing test injects both fetchImpl and dnsLookup together —
+  // see shopify.test.ts) — pin the connection to the exact address that was
+  // DNS-validated, closing the rebinding gap ssrf-guard.ts used to document
+  // as residual. See pinned-fetch.ts.
+  const fetchImpl = opts.fetchImpl ?? createAutoPinnedFetch(dnsLookup);
   const userAgent = opts.userAgent ?? DEFAULT_USER_AGENT;
   const pageSize = opts.pageSize ?? 250;
   const maxPages = opts.maxPages ?? 60;
@@ -485,7 +491,8 @@ export async function fetchProductPageHtml(
 ): Promise<ProductPageFetchResult> {
   const baseUrl = `https://${canonicalizeDomain(domain)}`;
   const deps: FetchDeps = {
-    fetchImpl: opts.fetchImpl ?? fetch,
+    // Same pinning rationale as crawlShopifyStore's default above.
+    fetchImpl: opts.fetchImpl ?? createAutoPinnedFetch(opts.dnsLookup),
     dnsLookup: opts.dnsLookup,
     userAgent: opts.userAgent ?? DEFAULT_USER_AGENT,
     timeoutMs: opts.timeoutMs ?? 15_000,
