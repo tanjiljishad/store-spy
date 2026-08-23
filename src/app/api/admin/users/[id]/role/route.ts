@@ -8,7 +8,17 @@ import type { Role } from "@/lib/admin/roles";
 export const runtime = "nodejs";
 
 const RATE_LIMIT = { limit: 30, windowMs: 60_000 };
-const VALID_ROLES: Role[] = ["USER", "ANALYST", "CONTENT_ADMIN", "SUPPORT_ADMIN", "BILLING_ADMIN", "OPS_ADMIN", "SUPER_ADMIN"];
+const VALID_ROLES: Role[] = [
+  "USER",
+  "ANALYST",
+  "CONTENT_ADMIN",
+  "SUPPORT_ADMIN",
+  "BILLING_ADMIN",
+  "OPS_ADMIN",
+  "MARKETING_ADMIN",
+  "MANAGER",
+  "SUPER_ADMIN",
+];
 
 /**
  * The most sensitive write in this app — see docs/milestone-11-security-

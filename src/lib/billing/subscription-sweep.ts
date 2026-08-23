@@ -17,6 +17,26 @@ import { recordAdminAction } from "../admin/audit";
  * down the rest of the sweep — same discipline as
  * monitoring/scheduler.ts's per-store isolation.
  */
+/**
+ * Milestone 12 §1.4: the inverse of the downgrade cascade below — a FREE
+ * user upgrading to a paid plan must have any trial-ceiling expiry
+ * (min(freeTrialEndsAt, watchExpiry) at watch-creation time, see
+ * monitoring/watch.ts's startMonitoring()) lifted from their existing
+ * ACTIVE watches immediately, not left to expire on schedule after they've
+ * already paid. Safe to call unconditionally on any plan change to a
+ * non-FREE plan: clearing an expiry that was never trial-related (no
+ * current plan sets one) is a no-op, and every plan-mutation call site
+ * either does this or checkout.ts's own equivalent — see setUserPlan() and
+ * processCheckout() for the two places `User.plan` is actually written
+ * to a paid value today.
+ */
+export async function clearTrialCeiling(prisma: Pick<PrismaClient, "watchlist">, userId: string): Promise<void> {
+  await prisma.watchlist.updateMany({
+    where: { userId, monitoringStatus: "ACTIVE", monitoringExpiresAt: { not: null } },
+    data: { monitoringExpiresAt: null },
+  });
+}
+
 export interface ExpireDueSubscriptionsResult {
   /** Subscriptions actually downgraded this sweep. */
   expiredCount: number;
@@ -71,7 +91,6 @@ async function expireOneSubscription(prisma: PrismaClient, subscriptionId: strin
 
     await tx.subscription.update({ where: { id: subscriptionId }, data: { status: "EXPIRED" } });
 
-    const user = await tx.user.findUniqueOrThrow({ where: { id: current.userId }, select: { email: true } });
     await tx.user.update({ where: { id: current.userId }, data: { plan: "FREE" } });
 
     // Downgrade cascade: a user dropping to FREE may hold more ACTIVE
@@ -97,13 +116,16 @@ async function expireOneSubscription(prisma: PrismaClient, subscriptionId: strin
       }
     }
 
+    // §4.1 addendum: metadata carries only the user id (already the
+    // targetId above) — never the subject's email. The admin UI joins to
+    // User for display; see audit.ts's own extended doc comment.
     await recordAdminAction(tx, {
       actorId: "system:expiry",
       actorEmail: "system:expiry",
       action: "subscription.expire",
       targetType: "User",
       targetId: current.userId,
-      metadata: { subscriptionId, userEmail: user.email, watchesExpired: excess.length },
+      metadata: { subscriptionId, watchesExpired: excess.length },
     });
 
     return excess.length;

@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import { containsEmailShapedValue } from "./audit-pii";
 
 /**
  * Every mutating admin action writes exactly one AdminAuditLog row, in the
@@ -12,6 +13,23 @@ import type { Prisma, PrismaClient } from "@prisma/client";
  * code's full value — callers pass only what's safe to keep forever (a
  * promo's id and last 4 characters, not the code itself; never a
  * passwordHash).
+ *
+ * Milestone 12 §4.1 addendum: extends the rule above to cover PII, not
+ * just secrets — `metadata` must never embed a subject's email or other
+ * direct identifier. Store the user id only (already `targetId` on almost
+ * every call site here); the admin UI joins to `User` at display time if
+ * it needs to show an email. `actorEmail` on this model is a DIFFERENT
+ * thing and stays exactly as it is — that's the ACTOR (who did this),
+ * deliberately denormalized so the log survives the actor's own account
+ * being deleted (see AdminAuditLog's own schema.prisma doc comment, and
+ * account/delete.ts's tombstoning of it specifically for that case). This
+ * rule is about the metadata payload's own content, i.e. the SUBJECT'S
+ * PII, never about `actorEmail` itself.
+ *
+ * Enforced at write time, not just by convention: `containsEmailShapedValue()`
+ * walks the whole `metadata` value and this throws — rolling back the
+ * enclosing transaction along with it, the same "can't be logged, never
+ * silently happens" discipline above — if it finds one. See audit.test.ts.
  */
 export interface RecordAdminActionArgs {
   actorId: string;
@@ -26,6 +44,12 @@ export async function recordAdminAction(
   tx: Pick<PrismaClient, "adminAuditLog">,
   args: RecordAdminActionArgs,
 ): Promise<void> {
+  if (args.metadata !== undefined && args.metadata !== null && containsEmailShapedValue(args.metadata)) {
+    throw new Error(
+      `recordAdminAction: metadata for action "${args.action}" contains an email-shaped value — store the user id only, never the subject's email (see this file's own doc comment).`,
+    );
+  }
+
   await tx.adminAuditLog.create({
     data: {
       actorId: args.actorId,

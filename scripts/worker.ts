@@ -35,6 +35,11 @@ import { sweepStaleCrawls } from "../src/lib/monitoring/stale-crawl-sweep";
 import { sweepOldLoginAttempts } from "../src/lib/security/login-attempt-sweep";
 import { expireDueSubscriptions } from "../src/lib/billing/subscription-sweep";
 import { expirePendingCheckouts } from "../src/lib/billing/checkout";
+import { sweepOldAnalysisUsage } from "../src/lib/entitlements/analysis-usage";
+import { sweepOldAnonymousAnalyses } from "../src/lib/entitlements/anonymous-analysis";
+import { expireDuePermissionGrants } from "../src/lib/admin/permissions-service";
+import { computeAndStoreSnapshots } from "../src/lib/admin/analytics/snapshot";
+import { dispatchPendingConversionEvents } from "../src/lib/marketing/conversion-events";
 
 /**
  * How often the worker checks for due work. Chosen relative to two real
@@ -146,6 +151,56 @@ async function runOneCycle(): Promise<void> {
     log("pending_checkout_sweep.completed", { durationMs: Date.now() - sweepStart, expired: result.expiredCount });
   } catch (e) {
     logError("pending_checkout_sweep.failed", e);
+  }
+
+  try {
+    const sweepStart = Date.now();
+    const result = await sweepOldAnalysisUsage(prisma);
+    log("analysis_usage_sweep.completed", { durationMs: Date.now() - sweepStart, deleted: result.deletedCount });
+  } catch (e) {
+    logError("analysis_usage_sweep.failed", e);
+  }
+
+  try {
+    const sweepStart = Date.now();
+    const result = await sweepOldAnonymousAnalyses(prisma);
+    log("anonymous_analysis_sweep.completed", { durationMs: Date.now() - sweepStart, deleted: result.deletedCount });
+  } catch (e) {
+    logError("anonymous_analysis_sweep.failed", e);
+  }
+
+  try {
+    const sweepStart = Date.now();
+    const result = await expireDuePermissionGrants(prisma);
+    log("permission_grant_expiry_sweep.completed", { durationMs: Date.now() - sweepStart, expired: result.expiredCount });
+  } catch (e) {
+    logError("permission_grant_expiry_sweep.failed", e);
+  }
+
+  try {
+    // Milestone 12 Section 3.2: safe to call every 5-minute cycle — the
+    // function itself self-gates to an hourly cadence (see
+    // analytics/snapshot.ts's own doc comment), so most cycles here are a
+    // single cheap MAX(computedAt) lookup, not a real recompute.
+    const snapshotStart = Date.now();
+    const result = await computeAndStoreSnapshots(prisma);
+    log("analytics_snapshot.completed", { durationMs: Date.now() - snapshotStart, computed: result.computed, rowsWritten: result.rowsWritten });
+  } catch (e) {
+    logError("analytics_snapshot.failed", e);
+  }
+
+  try {
+    // Milestone 12 §4.2 Step 2: the ONE place any marketing vendor's
+    // server-side conversion API is ever actually called — never the
+    // request path. Safe to call every cycle even with zero vendors
+    // configured (the current state, until §4.3 ships a real credential):
+    // dispatchOne() marks each PENDING row SKIPPED_NO_CREDENTIAL rather
+    // than looping forever on an unconfigured vendor.
+    const conversionStart = Date.now();
+    const result = await dispatchPendingConversionEvents(prisma);
+    log("marketing_conversion_dispatch.completed", { durationMs: Date.now() - conversionStart, ...result });
+  } catch (e) {
+    logError("marketing_conversion_dispatch.failed", e);
   }
 
   log("worker.cycle_completed", { durationMs: Date.now() - cycleStart });

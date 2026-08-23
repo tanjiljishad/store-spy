@@ -3,6 +3,7 @@ import type { PlanTier } from "../entitlements/plan-limits";
 import { canGrantRole, type Role } from "./roles";
 import { recordAdminAction } from "./audit";
 import type { AdminActor } from "./guard";
+import { clearTrialCeiling } from "../billing/subscription-sweep";
 
 /**
  * The admin-facing user operations — search, detail, plan/role writes,
@@ -28,15 +29,34 @@ export interface UserSearchPage {
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
-export async function searchUsers(
-  prisma: PrismaClient,
-  opts: { emailQuery?: string; cursor?: string | null; limit?: number } = {},
-): Promise<UserSearchPage> {
+export type UserSortOrder = "createdAt_desc" | "createdAt_asc";
+
+export interface UserSearchFilters {
+  emailQuery?: string;
+  /** Milestone 12 Section 3.3: "GET /api/admin/users gains search, plan/role filters, and sort." */
+  plan?: PlanTier;
+  role?: Role;
+  sort?: UserSortOrder;
+  cursor?: string | null;
+  limit?: number;
+}
+
+/** Shared by searchUsers() (paginated) and analytics/user-export.ts's exportUsers() (unpaginated) — the one place a plan/role/email filter turns into a Prisma where clause. */
+export function buildUserSearchWhere(opts: Pick<UserSearchFilters, "emailQuery" | "plan" | "role">): Prisma.UserWhereInput {
+  return {
+    ...(opts.emailQuery ? { email: { contains: opts.emailQuery, mode: "insensitive" } } : {}),
+    ...(opts.plan ? { plan: opts.plan } : {}),
+    ...(opts.role ? { role: opts.role } : {}),
+  };
+}
+
+export async function searchUsers(prisma: PrismaClient, opts: UserSearchFilters = {}): Promise<UserSearchPage> {
   const limit = Math.max(1, Math.min(opts.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE));
+  const direction = opts.sort === "createdAt_asc" ? "asc" : "desc";
 
   const rows = await prisma.user.findMany({
-    where: opts.emailQuery ? { email: { contains: opts.emailQuery, mode: "insensitive" } } : {},
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    where: buildUserSearchWhere(opts),
+    orderBy: [{ createdAt: direction }, { id: direction }],
     take: limit + 1,
     ...(opts.cursor ? { cursor: { id: opts.cursor }, skip: 1 } : {}),
     select: { id: true, email: true, plan: true, role: true, createdAt: true },
@@ -85,12 +105,18 @@ export async function getUserDetail(prisma: PrismaClient, userId: string): Promi
  * row, while the script calls it with the plain top-level client.
  */
 export async function setUserPlan(
-  db: Pick<PrismaClient, "user">,
+  db: Pick<PrismaClient, "user" | "watchlist">,
   userId: string,
   plan: PlanTier,
 ): Promise<{ id: string; email: string; plan: PlanTier } | null> {
   try {
-    return await db.user.update({ where: { id: userId }, data: { plan }, select: { id: true, email: true, plan: true } });
+    const updated = await db.user.update({ where: { id: userId }, data: { plan }, select: { id: true, email: true, plan: true } });
+    // Milestone 12 §1.4: an admin moving a user off FREE must lift any
+    // trial-ceiling expiry the same way a real checkout does (see
+    // billing/checkout.ts) — this is the shared implementation both call,
+    // so an admin-granted plan change isn't a second path that could drift.
+    if (plan !== "FREE") await clearTrialCeiling(db, userId);
+    return updated;
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") return null; // not found
     throw e;

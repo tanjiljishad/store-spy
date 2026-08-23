@@ -14,7 +14,17 @@
 import { prisma } from "../src/lib/db/prisma";
 import { recordAdminAction } from "../src/lib/admin/audit";
 
-const VALID_ROLES = ["USER", "ANALYST", "CONTENT_ADMIN", "SUPPORT_ADMIN", "BILLING_ADMIN", "OPS_ADMIN", "SUPER_ADMIN"] as const;
+const VALID_ROLES = [
+  "USER",
+  "ANALYST",
+  "CONTENT_ADMIN",
+  "SUPPORT_ADMIN",
+  "BILLING_ADMIN",
+  "OPS_ADMIN",
+  "MARKETING_ADMIN",
+  "MANAGER",
+  "SUPER_ADMIN",
+] as const;
 
 async function main() {
   const args = process.argv.slice(2);

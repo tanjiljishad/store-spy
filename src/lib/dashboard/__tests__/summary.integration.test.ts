@@ -29,6 +29,10 @@ beforeEach(async () => {
 async function makeUser(plan: "FREE" | "BASIC" = "FREE") {
   return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan } });
 }
+/** Milestone 12 §1.4: pins freeTrialEndsAt relative to the test's own fixed NOW rather than the DB default's real wall-clock time, so daysRemaining math stays deterministic. */
+async function setTrialEnd(userId: string, at: Date) {
+  await prisma.user.update({ where: { id: userId }, data: { freeTrialEndsAt: at } });
+}
 async function makeStoreWithProducts(domain: string, count: number) {
   const store = await prisma.store.create({ data: { domain, platform: "SHOPIFY" } });
   await prisma.product.createMany({
@@ -52,10 +56,8 @@ describe("getDashboardSummary — FREE plan", () => {
     const summary = await getDashboardSummary(prisma, user.id, NOW);
 
     expect(summary.plan).toBe("FREE");
-    // Pre-existing, unrelated to Milestone 11: the (uncommitted) freemium
-    // redesign already changed FREE's maxUniqueAnalyses to null/unlimited
-    // in plan-limits.ts — this assertion was stale against that.
-    expect(summary.analyses).toEqual({ used: 0, limit: null, stores: [] });
+    // Milestone 12 §1.1/§1.2: FREE's real windowed limit is 10/24h, not unlimited.
+    expect(summary.analyses).toEqual({ used: 0, limit: 10, resetsAt: null, stores: [] });
     expect(summary.monitoring).toEqual({ active: [], slotsUsed: 0, slotsLimit: 1 });
   });
 
@@ -70,24 +72,23 @@ describe("getDashboardSummary — FREE plan", () => {
     expect(summary.analyses.stores).toEqual([{ domain: "dash-store.com", productCount: 42, analyzedAt: expect.any(String) }]);
   });
 
-  it("reflects a single active watch with the correct days-remaining math", async () => {
+  it("reflects a single active watch with the correct days-remaining math (Milestone 12: FREE watches carry the trial ceiling)", async () => {
     const user = await makeUser();
+    await setTrialEnd(user.id, new Date(NOW.getTime() + 30 * 24 * 60 * 60_000));
     const store = await makeStoreWithProducts("watched-store.com", 5);
     await startMonitoring(prisma, user.id, store.id, "FREE", NOW);
 
     const summary = await getDashboardSummary(prisma, user.id, NOW);
 
     expect(summary.monitoring.active).toHaveLength(1);
-    // Pre-existing, unrelated to Milestone 11 — see watch-route.integration.test.ts:
-    // FREE's monitoringDurationDays is null (no expiry) under the
-    // already-uncommitted freemium redesign, so there's no day count to remain.
-    expect(summary.monitoring.active[0]).toMatchObject({ domain: "watched-store.com", daysRemaining: null });
+    expect(summary.monitoring.active[0]).toMatchObject({ domain: "watched-store.com", daysRemaining: 30 });
     expect(summary.monitoring.slotsUsed).toBe(1);
   });
 
   it("user isolation: one user's dashboard never reflects another user's usage or monitoring", async () => {
     const userA = await makeUser();
     const userB = await makeUser();
+    await setTrialEnd(userA.id, new Date(NOW.getTime() + 30 * 24 * 60 * 60_000));
     const storeA = await makeStoreWithProducts("store-a.com", 10);
     const storeB = await makeStoreWithProducts("store-b.com", 20);
     await prisma.analysisUsage.create({ data: { userId: userA.id, storeId: storeA.id } });
@@ -104,16 +105,12 @@ describe("getDashboardSummary — FREE plan", () => {
 });
 
 describe("getDashboardSummary — BASIC plan", () => {
-  it("represents unlimited analyses as limit: null, never a large number", async () => {
+  it("Milestone 12 §1.1: BASIC has its own real, higher limits — 50 analyses/24h, 20 monitored stores", async () => {
     const user = await makeUser("BASIC");
     const summary = await getDashboardSummary(prisma, user.id, NOW);
 
-    expect(summary.analyses.limit).toBeNull();
-    // Pre-existing, unrelated to Milestone 11: plan-limits.ts currently sets
-    // BASIC's maxActiveMonitoredStores to 10, not this test's old value of
-    // 20 — same "test lagging the already-uncommitted freemium redesign"
-    // pattern as the other fixes nearby, aligned to match.
-    expect(summary.monitoring.slotsLimit).toBe(10);
+    expect(summary.analyses.limit).toBe(50);
+    expect(summary.monitoring.slotsLimit).toBe(20);
   });
 
   it("lists multiple simultaneous active watches, each with continuous (null) expiry", async () => {

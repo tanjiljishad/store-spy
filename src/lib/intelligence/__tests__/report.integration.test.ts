@@ -133,8 +133,11 @@ describe("buildStoreIntelligenceReport — section composition", () => {
 
     // monitoring / entitlement passthrough
     expect(report.monitoring.totalCrawls).toBe(3);
-    // Pre-existing, unrelated to Milestone 11 — see summary.integration.test.ts.
-    expect(report.entitlement).toEqual({ analysesUsed: 1, analysesLimit: null, alreadyAnalyzed: true });
+    // Milestone 12 §1.1/§1.2: FREE's real windowed limit is 10/24h.
+    expect(report.entitlement.analysesUsed).toBe(1);
+    expect(report.entitlement.analysesLimit).toBe(10);
+    expect(report.entitlement.alreadyAnalyzed).toBe(true);
+    expect(typeof report.entitlement.resetsAt).toBe("string");
 
     // meta — real history-sufficiency flags, no fabricated composite score anywhere.
     // (Deliberately NOT matching the bare word "confidence" here: matchConfidence

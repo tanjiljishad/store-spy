@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
-import { maxActiveMonitoredStores, maxUniqueAnalyses } from "../entitlements/entitlement-service";
+import { maxActiveMonitoredStores } from "../entitlements/entitlement-service";
+import { getAnalysisUsage } from "../entitlements/analysis-usage";
 import type { Limit, PlanTier } from "../entitlements/plan-limits";
 import { daysRemaining } from "../days-remaining";
 
@@ -32,19 +33,42 @@ export interface DashboardActiveWatch {
 export interface DashboardSummary {
   email: string;
   plan: PlanTier;
-  analyses: { used: number; limit: Limit; stores: DashboardAnalyzedStore[] };
+  analyses: {
+    /** Milestone 12 §1.2: rolling-24h count, not a lifetime total — see analysis-usage.ts's countAnalysesInWindow(). */
+    used: number;
+    limit: Limit;
+    resetsAt: string | null;
+    /** Every store this user has EVER analyzed (permanent access, hasAnalyzedStore()'s own scope) — deduplicated, most-recent analysis first, independent of the windowed used/limit above. */
+    stores: DashboardAnalyzedStore[];
+  };
   monitoring: { active: DashboardActiveWatch[]; slotsUsed: number; slotsLimit: Limit };
 }
 
 export async function getDashboardSummary(prisma: PrismaClient, userId: string, now: Date = new Date()): Promise<DashboardSummary> {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { email: true, plan: true } });
 
-  const usageRows = await prisma.analysisUsage.findMany({
-    where: { userId },
-    orderBy: { createdAt: "desc" },
-    include: { store: { select: { id: true, domain: true } } },
+  const [usage, usageRows] = await Promise.all([
+    getAnalysisUsage(prisma, userId),
+    // The AnalysisUsage table is append-only now (Milestone 12 §1.2) — a
+    // store re-analyzed on different days has multiple rows. Ordered
+    // newest-first and deduplicated by storeId below so the store LIST
+    // (permanent access, not the windowed quota) shows each store once, at
+    // its most recent analysis time.
+    prisma.analysisUsage.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      include: { store: { select: { id: true, domain: true } } },
+    }),
+  ]);
+
+  const seenStoreIds = new Set<string>();
+  const dedupedRows = usageRows.filter((u) => {
+    if (seenStoreIds.has(u.storeId)) return false;
+    seenStoreIds.add(u.storeId);
+    return true;
   });
-  const storeIds = usageRows.map((u) => u.storeId);
+
+  const storeIds = dedupedRows.map((u) => u.storeId);
   const productCounts =
     storeIds.length > 0
       ? await prisma.product.groupBy({ by: ["storeId"], where: { storeId: { in: storeIds }, status: "ACTIVE" }, _count: { _all: true } })
@@ -61,9 +85,10 @@ export async function getDashboardSummary(prisma: PrismaClient, userId: string, 
     email: user.email,
     plan: user.plan,
     analyses: {
-      used: usageRows.length,
-      limit: maxUniqueAnalyses(user.plan),
-      stores: usageRows.map((u) => ({
+      used: usage.used,
+      limit: usage.limit,
+      resetsAt: usage.resetsAt?.toISOString() ?? null,
+      stores: dedupedRows.map((u) => ({
         domain: u.store.domain,
         productCount: countByStore.get(u.storeId) ?? 0,
         analyzedAt: u.createdAt.toISOString(),

@@ -7,9 +7,10 @@ describe("listPriceCents", () => {
     expect(listPriceCents("FREE", "ANNUAL")).toBe(0);
   });
 
-  it("BASIC and BUSINESS are priced identically — one paid tier, two retained enum values", () => {
-    expect(listPriceCents("BASIC", "MONTHLY")).toBe(listPriceCents("BUSINESS", "MONTHLY"));
-    expect(listPriceCents("BASIC", "ANNUAL")).toBe(listPriceCents("BUSINESS", "ANNUAL"));
+  it("Milestone 12 D4: BASIC ($19/mo placeholder) and BUSINESS ($49/mo, confirmed) are no longer priced identically", () => {
+    expect(listPriceCents("BASIC", "MONTHLY")).toBe(1900);
+    expect(listPriceCents("BUSINESS", "MONTHLY")).toBe(4900);
+    expect(listPriceCents("BASIC", "MONTHLY")).not.toBe(listPriceCents("BUSINESS", "MONTHLY"));
   });
 
   it("returns integer cents, never a float-shaped value", () => {

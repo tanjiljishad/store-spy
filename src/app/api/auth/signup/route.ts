@@ -4,6 +4,9 @@ import { prisma } from "../../../../lib/db/prisma";
 import { hashPassword, isPasswordAcceptable } from "../../../../lib/auth/password";
 import { isPlausibleEmail, normalizeEmail } from "../../../../lib/auth/normalize-email";
 import { checkRateLimit, getClientIp } from "../../../../lib/security/rate-limit";
+import { SIGNUP_FORM_CONSENT_SOURCE } from "../../../../lib/marketing/consent";
+import { COOKIE_CONSENT_COOKIE_NAME, parseCookieConsent } from "../../../../lib/marketing/cookie-consent";
+import { recordSignupConversionEvents } from "../../../../lib/marketing/conversion-events";
 
 /**
  * Creates a Credentials-provider account. Does not sign the user in itself
@@ -49,6 +52,13 @@ export async function POST(req: NextRequest) {
   const rawEmail = isRecord(body) && typeof body.email === "string" ? body.email : null;
   const password = isRecord(body) && typeof body.password === "string" ? body.password : null;
   const name = isRecord(body) && typeof body.name === "string" ? body.name.slice(0, 200) : null;
+  // Milestone 12 §4.1: the ToS checkbox stays MANDATORY — reject the
+  // signup outright if it isn't checked, the same way a missing password
+  // rejects. marketingConsent is the opposite: its absence/false is a
+  // perfectly valid, expected signup, never rejected — see the doc's own
+  // "separate, unticked" requirement.
+  const tosAccepted = isRecord(body) && body.tosAccepted === true;
+  const marketingConsent = isRecord(body) && body.marketingConsent === true;
 
   if (!rawEmail || !isPlausibleEmail(rawEmail)) {
     return Response.json({ error: "Enter a valid email address." }, { status: 400 });
@@ -59,16 +69,53 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
+  if (!tosAccepted) {
+    return Response.json({ error: "You must agree to the Terms of Service and Privacy Policy to create an account." }, { status: 400 });
+  }
 
   const email = normalizeEmail(rawEmail);
   const passwordHash = await hashPassword(password);
 
   const decisionStartedAt = Date.now();
   try {
+    // marketingConsent bundled into the SAME create() call, not a second
+    // update() right after — a two-step "create, then set consent" would
+    // leave a real (if brief) window where the row exists with the
+    // GDPR-correct default (false) contradicted by an in-flight request
+    // that already promised true; one insert makes the row correct from
+    // the instant it exists, with no intermediate state to reason about.
+    const now = new Date();
     const user = await prisma.user.create({
-      data: { email, passwordHash, name },
+      data: {
+        email,
+        passwordHash,
+        name,
+        // §4.1 addendum: tosAccepted was already validated true above —
+        // this is the ONE field DashboardLayout gates on (needsConsentInterstitial()),
+        // so a credentials signup must set it here or it would incorrectly
+        // hit the OAuth-only /welcome interstitial on its first dashboard visit.
+        tosAcceptedAt: now,
+        ...(marketingConsent ? { marketingConsent: true, marketingConsentAt: now, marketingConsentSource: SIGNUP_FORM_CONSENT_SOURCE } : {}),
+      },
       select: { id: true, email: true },
     });
+
+    // §4.2 Step 2: reads the SAME cookie the consent banner and every
+    // pixel loader already use (cookie-consent.ts) — never a second
+    // consent mechanism, and never User.marketingConsent (a legally
+    // distinct "may we email you" consent, not tracking consent). This is
+    // the request's OWN cookie header — whatever the banner already wrote
+    // to this browser before the signup form was submitted — not
+    // anything this route decides on its own. Best-effort: a failure here
+    // must never break the actual signup response, so it's isolated in
+    // its own try/catch and only logged.
+    try {
+      const cookieConsent = parseCookieConsent(req.cookies.get(COOKIE_CONSENT_COOKIE_NAME)?.value);
+      await recordSignupConversionEvents(prisma, user.id, cookieConsent);
+    } catch (e) {
+      console.error("[api/auth/signup] recordSignupConversionEvents failed (non-fatal):", e);
+    }
+
     return await respondNoFasterThan(
       decisionStartedAt,
       Response.json({ id: user.id, email: user.email }, { status: 201 }),

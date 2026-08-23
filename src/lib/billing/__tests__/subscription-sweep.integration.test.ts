@@ -170,4 +170,21 @@ describe("expireDueSubscriptions — the amendment's four required tests", () =>
     expect(auditRows).toHaveLength(1);
     expect(auditRows[0].actorId).toBe("system:expiry");
   });
+
+  // Milestone 12 §4.1 addendum: metadata.userEmail was the concrete
+  // real-world violation of the "never embed the subject's email" rule —
+  // regression-locked here against a real audit row, not just the unit-level
+  // recordAdminAction() guard.
+  it("the audit row's metadata never contains the downgraded user's email, only their id (already targetId)", async () => {
+    const user = await makeUser("BASIC");
+    await prisma.subscription.create({
+      data: { userId: user.id, plan: "BASIC", source: "PROMO", status: "ACTIVE", expiresAt: new Date(Date.now() - 1000) },
+    });
+
+    await expireDueSubscriptions(prisma);
+
+    const auditRow = await prisma.adminAuditLog.findFirstOrThrow({ where: { targetId: user.id, action: "subscription.expire" } });
+    expect(auditRow.metadata).not.toHaveProperty("userEmail");
+    expect(JSON.stringify(auditRow.metadata)).not.toContain(user.email);
+  });
 });

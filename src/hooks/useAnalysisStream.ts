@@ -1,13 +1,20 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { AnalysisReport, AnalysisSseEvent, AnalysisStatus } from "@/lib/analysis/types";
+import type { AnalysisReport, AnalysisSseEvent, AnalysisStatus, LimitReachedDetail } from "@/lib/analysis/types";
 
 export type AnalysisViewState =
   | { view: "idle" }
   | { view: "analyzing"; domain: string; events: AnalysisSseEvent[] }
   | { view: "report"; domain: string; report: AnalysisReport }
-  | { view: "error"; domain: string; status: AnalysisStatus; message: string; retryable: boolean };
+  | {
+      view: "error";
+      domain: string;
+      status: AnalysisStatus;
+      message: string;
+      retryable: boolean;
+      limitReached?: LimitReachedDetail;
+    };
 
 function labelFromUrl(rawUrl: string): string {
   return rawUrl
@@ -27,7 +34,7 @@ export function useAnalysisStream() {
   const [state, setState] = useState<AnalysisViewState>({ view: "idle" });
   const abortRef = useRef<AbortController | null>(null);
 
-  const start = useCallback(async (rawUrl: string) => {
+  const start = useCallback(async (rawUrl: string, turnstileToken?: string | null) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -39,7 +46,7 @@ export function useAnalysisStream() {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: rawUrl }),
+        body: JSON.stringify({ url: rawUrl, ...(turnstileToken ? { turnstileToken } : {}) }),
         signal: controller.signal,
       });
 
@@ -88,7 +95,14 @@ export function useAnalysisStream() {
           } else if (event.type === "complete") {
             setState({ view: "report", domain, report: event.report });
           } else if (event.type === "error") {
-            setState({ view: "error", domain, status: event.status, message: event.message, retryable: event.retryable });
+            setState({
+              view: "error",
+              domain,
+              status: event.status,
+              message: event.message,
+              retryable: event.retryable,
+              limitReached: event.limitReached,
+            });
           }
         }
       }

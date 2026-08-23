@@ -20,43 +20,63 @@ export type PlanTier = "FREE" | "BASIC" | "BUSINESS";
 export type Limit = number | null;
 
 export interface PlanLimits {
-  maxUniqueAnalyses: Limit;
+  /**
+   * Milestone 12 §1.1: rolling-24h analysis quota — replaces the old
+   * lifetime "unique stores ever analyzed" ceiling entirely. See
+   * entitlements/analysis-usage.ts's countAnalysesInWindow().
+   */
+  maxAnalysesPer24h: Limit;
   maxActiveMonitoredStores: Limit;
   /** null = no commercial monitoring expiry. */
   monitoringDurationDays: Limit;
+  /**
+   * Milestone 12 §1.4, per D1: days from account creation until a FREE
+   * user's monitoring stops being free. null = no trial ceiling (every
+   * paid plan). See monitoring/watch.ts's startMonitoring().
+   */
+  freeTrialDays: Limit;
   /** Full free-report intelligence categories vs. the future paid-only ones. */
   historicalAccess: boolean;
   advancedIntelligence: boolean;
 }
 
 /**
- * BASIC and BUSINESS are retained enum values for existing-data compatibility.
- * Publicly, both map to the single future PAID offer; billing is deliberately
- * not modeled here.
+ * Milestone 12 §1.1 final plan matrix — the single source of truth; nothing
+ * else in the codebase may hardcode any of these numbers. BASIC and
+ * BUSINESS are no longer identical: BUSINESS is marketed as "unlimited,
+ * fair use up to 100/day" — see analysis-usage.ts and the LIMIT_REACHED
+ * response shape for how the hard 100 cap coexists with that copy without
+ * ever being silently exceeded.
  */
 const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
   FREE: {
-    maxUniqueAnalyses: null,
+    maxAnalysesPer24h: 10,
     maxActiveMonitoredStores: 1,
     monitoringDurationDays: null,
+    freeTrialDays: 30,
     historicalAccess: true,
     advancedIntelligence: false,
   },
   BASIC: {
-    maxUniqueAnalyses: null, // unlimited
-    maxActiveMonitoredStores: 10,
+    maxAnalysesPer24h: 50,
+    maxActiveMonitoredStores: 20,
     monitoringDurationDays: null,
+    freeTrialDays: null,
     historicalAccess: true,
     advancedIntelligence: true,
   },
   BUSINESS: {
-    maxUniqueAnalyses: null,
-    maxActiveMonitoredStores: 10,
+    maxAnalysesPer24h: 100,
+    maxActiveMonitoredStores: 50,
     monitoringDurationDays: null,
+    freeTrialDays: null,
     historicalAccess: true,
     advancedIntelligence: true,
   },
 };
+
+/** Anonymous callers are not a PlanTier (no account exists yet) — kept separate rather than forcing a 4th matrix row onto a type that means "signed-in user's plan" everywhere else. */
+export const ANONYMOUS_ANALYSES_PER_24H = 3;
 
 export function getPlanLimits(plan: PlanTier): PlanLimits {
   return PLAN_LIMITS[plan];

@@ -59,6 +59,53 @@ services:
         sync: false
       - key: SCHEDULER_SECRET
         sync: false
+      # Milestone 12 §1.3 — anonymous analysis's Turnstile challenge. See
+      # docs/environment-variables.md: unset locally is fine (the widget
+      # just doesn't render), but staging/production need real values from
+      # the same Cloudflare Turnstile site.
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+      - key: NEXT_PUBLIC_TURNSTILE_SITE_KEY
+        sync: false
+      # Not a secret — the global anonymous-crawl circuit breaker's ceiling.
+      # Defaults to 500 if unset; only set explicitly if a real-traffic
+      # value differs.
+      - key: ANONYMOUS_CRAWL_HOURLY_CEILING
+        value: "500"
+      # Milestone 12 §4.1 — signs the HMAC no-login unsubscribe link. See
+      # docs/environment-variables.md: fails closed if unset (every
+      # unsubscribe link rejected), so this is required for real production
+      # marketing email compliance even though nothing crashes without it.
+      - key: UNSUBSCRIBE_TOKEN_SECRET
+        sync: false
+      # Milestone 12 §4.2 Step 2 — the Meta base Pixel. Not a secret (a
+      # Pixel ID is public by design), but still sync: false since it's a
+      # real per-environment value, not a build-time constant. Leave both
+      # unset to keep the pixel off in a given environment — see
+      # docs/environment-variables.md.
+      - key: NEXT_PUBLIC_META_PIXEL_ENABLED
+        sync: false
+      - key: NEXT_PUBLIC_META_PIXEL_ID
+        sync: false
+      # Milestone 12 §4.2 Step 2, vendor 2 — GA4's client base tag. Same
+      # public/non-secret status as the Meta pixel ID above. Leave both
+      # unset to keep the tag off in a given environment.
+      - key: NEXT_PUBLIC_GA4_MEASUREMENT_ENABLED
+        sync: false
+      - key: NEXT_PUBLIC_GA4_MEASUREMENT_ID
+        sync: false
+      # Milestone 12 §4.2 Step 2, vendor 3 — TikTok's client base pixel. Same
+      # public/non-secret status as the other two vendors' pixel ids above.
+      - key: NEXT_PUBLIC_TIKTOK_PIXEL_ENABLED
+        sync: false
+      - key: NEXT_PUBLIC_TIKTOK_PIXEL_ID
+        sync: false
+      # Milestone 12 §4.2 Step 2, vendor 4 — LinkedIn's client base Insight
+      # Tag. Same public/non-secret status as the other vendors' pixel ids.
+      - key: NEXT_PUBLIC_LINKEDIN_PIXEL_ENABLED
+        sync: false
+      - key: NEXT_PUBLIC_LINKEDIN_PARTNER_ID
+        sync: false
 
   - type: worker
     name: bellwether-worker
@@ -87,3 +134,39 @@ services:
       # never through the HTTP-authenticated /api/internal/scheduler/* routes
       # (see scripts/worker.ts's own header comment and
       # docs/environment-variables.md). It needs neither.
+      # Milestone 12 §4.2 Step 2 — the ONE process that would ever call
+      # Meta's Conversions API (dispatchPendingConversionEvents(), never
+      # the web request path). Deliberately left UNSET: Milestone 12 §4.3
+      # (the credential vault) hasn't shipped, so there's no safe place to
+      # actually configure this secret yet — see this variable's own doc
+      # comment in environment-variables.md. Declared here, empty, so this
+      # is the one place it'll go once §4.3 exists; setting a real value
+      # today would just make every dispatch attempt fail loudly instead
+      # of skipping gracefully (see dispatchMetaConversionEvent()'s own
+      # PROVIDER SEAM comment), with no actual event ever reaching Meta.
+      - key: META_CONVERSIONS_API_ACCESS_TOKEN
+        sync: false
+      # Milestone 12 §4.2 Step 2, vendor 2 — same deliberately-unset status
+      # as META_CONVERSIONS_API_ACCESS_TOKEN above, and the same reason:
+      # §4.3 (the credential vault) hasn't shipped, so dispatchGoogleConversion
+      # Event() marks every event SKIPPED_NO_CREDENTIAL until it does.
+      - key: GOOGLE_MEASUREMENT_PROTOCOL_API_SECRET
+        sync: false
+      # Milestone 12 §4.2 Step 2, vendor 3 — same deliberately-unset status
+      # as the other two vendors' server-side secrets above, same reason:
+      # §4.3 (the credential vault) hasn't shipped.
+      - key: TIKTOK_EVENTS_API_ACCESS_TOKEN
+        sync: false
+      # Milestone 12 §4.2 Step 2, vendor 4 — same deliberately-unset status
+      # as the other vendors' server-side secrets above, same reason: §4.3
+      # (the credential vault) hasn't shipped.
+      - key: LINKEDIN_CONVERSIONS_API_ACCESS_TOKEN
+        sync: false
+      # Milestone 12 §4.2 Step 2, vendor 5 — X's Conversions API. UNLIKE
+      # every other vendor, X has no client-side pixel yet (pending an
+      # operator decision — see src/lib/marketing/pixels/x.ts), so
+      # X_PIXEL_ID lives only here on the worker, not on the web service.
+      - key: X_PIXEL_ID
+        sync: false
+      - key: X_CONVERSIONS_API_ACCESS_TOKEN
+        sync: false

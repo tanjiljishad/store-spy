@@ -1,20 +1,25 @@
 "use client";
 
 import { useState } from "react";
+import { useSession } from "next-auth/react";
 import { useAnalysisStream } from "@/hooks/useAnalysisStream";
 import { StoreUrlInput } from "@/components/analysis/StoreUrlInput";
 import { DetectionLog } from "@/components/analysis/DetectionLog";
 import { ErrorPanel } from "@/components/analysis/ErrorPanel";
-import { AnonymousReportView } from "@/components/analysis/AnonymousReportView";
+import { AnonymousProbeView } from "@/components/analysis/AnonymousProbeView";
 import { FullReportView } from "@/components/analysis/FullReportView";
 import { SiteNav } from "@/components/marketing/SiteNav";
 import { PricingSection } from "@/components/marketing/PricingSection";
 import { SiteFooter } from "@/components/marketing/SiteFooter";
 import { Toast } from "@/components/marketing/Toast";
+import { MarketingPixels } from "@/components/marketing/MarketingPixels";
 
 export default function HomePage() {
   const { state, start, reset } = useAnalysisStream();
+  const { status: sessionStatus } = useSession();
   const [toast, setToast] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const anonymous = sessionStatus === "unauthenticated";
 
   function showToast(message: string) {
     setToast(message);
@@ -38,7 +43,12 @@ export default function HomePage() {
             theme, apps, pricing, activity — and turns them into intelligence you&apos;d otherwise spend hours
             assembling by hand.
           </p>
-          <StoreUrlInput onSubmit={start} />
+          <StoreUrlInput
+            onSubmit={(url) => start(url, turnstileToken)}
+            requireTurnstile={anonymous}
+            turnstileToken={turnstileToken}
+            onTurnstileToken={setTurnstileToken}
+          />
         </header>
       )}
 
@@ -55,15 +65,15 @@ export default function HomePage() {
             status={state.status}
             message={state.message}
             retryable={state.retryable}
-            onRetry={() => start(state.domain)}
+            onRetry={() => start(state.domain, turnstileToken)}
             onNewAnalysis={reset}
           />
         </div>
       )}
 
-      {/* runAnalysis() only ever produces "anonymous_preview" or "full" — "unanalyzed_preview" is exclusive to GET /api/store/[domain]/report */}
-      {state.view === "report" && state.report.access === "anonymous_preview" && (
-        <AnonymousReportView report={state.report} onNewAnalysis={reset} />
+      {/* POST /api/analyze produces "anonymous_probe" (signed out, Milestone 12 §1.3) or "full" (signed in) — "anonymous_preview"/"unanalyzed_preview" are exclusive to GET /api/store/[domain]/report */}
+      {state.view === "report" && state.report.access === "anonymous_probe" && (
+        <AnonymousProbeView report={state.report} onNewAnalysis={reset} />
       )}
       {state.view === "report" && state.report.access === "full" && (
         <FullReportView report={state.report} onNewAnalysis={reset} />
@@ -73,6 +83,7 @@ export default function HomePage() {
       <SiteFooter />
 
       <Toast message={toast} />
+      <MarketingPixels />
     </>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { UpgradePrompt } from "./UpgradePrompt";
 
 export interface MonitorButtonProps {
   domain: string;
@@ -35,6 +36,7 @@ export function MonitorButton({
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showUpgradePrompt, setShowUpgradePrompt] = useState(false);
 
   async function start() {
     setLoading(true);
@@ -42,12 +44,15 @@ export function MonitorButton({
     try {
       const res = await fetch(`/api/store/${encodeURIComponent(domain)}/watch`, { method: "POST" });
       if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { code?: string };
-        setError(
-          body.code === "MONITORING_LIMIT_REACHED"
-            ? `${planLabel} plan allows monitoring of ${monitorLimit === null ? "unlimited" : `up to ${monitorLimit}`} store${monitorLimit === 1 ? "" : "s"}.`
-            : "Couldn't start monitoring. Try again.",
-        );
+        const body = (await res.json().catch(() => ({}))) as { code?: string; limit?: string };
+        if (body.code === "LIMIT_REACHED" && (body.limit === "MONITORED_STORES" || body.limit === "TRIAL_EXPIRED")) {
+          // Milestone 12 §1.5: a bare error here would just tell the user
+          // no — the actual conversion opportunity is showing them what
+          // upgrading unlocks, right where they hit the wall.
+          setShowUpgradePrompt(true);
+        } else {
+          setError("Couldn't start monitoring. Try again.");
+        }
         return;
       }
       router.refresh();
@@ -86,17 +91,16 @@ export function MonitorButton({
 
   const atLimit = monitorLimit !== null && otherActiveWatchCount >= monitorLimit;
 
-  if (atLimit) {
+  if (atLimit || showUpgradePrompt) {
     return (
       <div className="text-right">
         <span className="rounded-md border border-line px-4 py-2.5 font-mono text-[13px] text-muted">
           Monitoring limit reached
         </span>
         <p className="mt-1.5 max-w-[34ch] font-mono text-[11px] text-muted-dim">
-          {planLabel === "Free"
-            ? "Free accounts can monitor 1 store. Paid accounts can monitor up to 10 stores."
-            : `${planLabel} accounts can monitor up to ${monitorLimit} stores.`}
+          {planLabel} accounts can monitor{monitorLimit === null ? " unlimited stores." : ` up to ${monitorLimit} store${monitorLimit === 1 ? "" : "s"}.`}
         </p>
+        <UpgradePrompt />
       </div>
     );
   }

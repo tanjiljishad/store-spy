@@ -4,9 +4,19 @@ import { runAnalysis } from "../run-analysis";
 import type { AnalysisSseEvent } from "../types";
 
 /**
- * The one place that decides what a browser sees for a real analysis. Run
- * via `npm run test:integration` — see persist.integration.test.ts for why
- * DATABASE_URL is guarded this way (this suite truncates every table).
+ * The one place that decides what a browser sees for a real, AUTHENTICATED
+ * analysis. Run via `npm run test:integration` — see persist.integration.test.ts
+ * for why DATABASE_URL is guarded this way (this suite truncates every table).
+ *
+ * Milestone 12 §1.3 (D3 amendment): `caller` is now REQUIRED — an anonymous
+ * caller no longer reaches runAnalysis() at all; it gets a completely
+ * different, much cheaper operation (analysis/anonymous-probe.ts's
+ * runAnonymousProbe()), covered by anonymous-probe.integration.test.ts, not
+ * this file. Every test below that used to omit `caller` (defaulting to
+ * anonymous) now supplies a real one — that's a mechanical fix for the
+ * signature change, not a change in what those tests are asserting (crawl
+ * mechanics: SSRF rejection, malformed URL, dedup, failure classification
+ * — none of that is caller-identity-dependent).
  */
 
 const url = process.env.DATABASE_URL;
@@ -65,14 +75,17 @@ function routedFetch(routes: Record<string, (url: URL) => Response | Promise<Res
   }) as unknown as typeof fetch;
 }
 
-async function collectEvents(
-  fetchImpl: typeof fetch,
-  urlInput: string,
-  caller?: { userId: string; plan: "FREE" | "BASIC" | "BUSINESS" } | null,
-): Promise<AnalysisSseEvent[]> {
+type Caller = { userId: string; plan: "FREE" | "BASIC" | "BUSINESS" };
+
+async function collectEvents(fetchImpl: typeof fetch, urlInput: string, caller: Caller): Promise<AnalysisSseEvent[]> {
   const events: AnalysisSseEvent[] = [];
   await runAnalysis({ prisma, urlInput, fetchImpl, dnsLookup: SAFE_DNS, caller, onEvent: (e) => events.push(e) });
   return events;
+}
+
+async function makeCaller(plan: Caller["plan"] = "FREE"): Promise<Caller> {
+  const user = await prisma.user.create({ data: { email: `${Math.random().toString(36).slice(2)}@example.com`, plan } });
+  return { userId: user.id, plan };
 }
 
 const REAL_STORE_ROUTES = {
@@ -86,33 +99,9 @@ const REAL_STORE_ROUTES = {
 };
 
 describe("runAnalysis — the security contract", () => {
-  it("an anonymous caller gets ONLY the documented truncated preview — no full-report fields at all", async () => {
-    const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://real-store.com", null);
-
-    const complete = events.find((e) => e.type === "complete");
-    expect(complete).toBeDefined();
-    if (complete?.type !== "complete") throw new Error("unreachable");
-
-    const { report } = complete;
-    expect(report.access).toBe("anonymous_preview");
-    expect(report.domain).toBe("real-store.com");
-    expect(report.productCount).toBe(2); // real, from the actual crawl
-    if (report.access !== "anonymous_preview") throw new Error("unreachable");
-    expect(report.theme.name).toBe("Dawn"); // real, fingerprinted from actual HTML
-
-    // The old fake { locked: true } paywall contract is gone. The preview
-    // shape doesn't have monitoring/apps/pricing/entitlement fields at all
-    // — an anonymous caller's payload is exhaustively small, not a partially
-    // redacted version of the full one.
-    expect(Object.keys(report).sort()).toEqual(["access", "checkedAt", "cta", "domain", "platform", "productCount", "theme"]);
-  });
-
   it("an authenticated, entitled caller gets the full report with real epistemic-status fields — never { locked: true }", async () => {
-    const user = await prisma.user.create({ data: { email: "contract-test@example.com", plan: "FREE" } });
-    const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://real-store.com", {
-      userId: user.id,
-      plan: "FREE",
-    });
+    const caller = await makeCaller("FREE");
+    const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://real-store.com", caller);
 
     const complete = events.find((e) => e.type === "complete");
     if (complete?.type !== "complete") throw new Error("unreachable");
@@ -136,15 +125,16 @@ describe("runAnalysis — the security contract", () => {
     expect(JSON.stringify(report)).not.toContain("locked");
 
     expect(report.monitoring).toMatchObject({ tier: "COLD", active: true, totalCrawls: 1 });
-    // Pre-existing, unrelated to Milestone 11: the (uncommitted) freemium
-    // redesign already changed FREE's maxUniqueAnalyses to null/unlimited
-    // in plan-limits.ts — this assertion was stale against that, not
-    // against anything touched this milestone.
-    expect(report.entitlement).toEqual({ analysesUsed: 1, analysesLimit: null, alreadyAnalyzed: false });
+    // Milestone 12 §1.1: FREE's real windowed limit is 10/24h, not unlimited.
+    expect(report.entitlement.analysesUsed).toBe(1);
+    expect(report.entitlement.analysesLimit).toBe(10);
+    expect(report.entitlement.alreadyAnalyzed).toBe(false);
+    expect(typeof report.entitlement.resetsAt).toBe("string");
   });
 
   it("persists the crawl and store for a successful analysis", async () => {
-    await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://real-store.com");
+    const caller = await makeCaller();
+    await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://real-store.com", caller);
 
     const store = await prisma.store.findUniqueOrThrow({ where: { domain: "real-store.com" } });
     expect(store.baselinedAt).not.toBeNull();
@@ -157,7 +147,8 @@ describe("runAnalysis — the security contract", () => {
 
 describe("runAnalysis — failure classification", () => {
   it("classifies a non-Shopify domain as non_shopify, without leaking the raw crawler reason", async () => {
-    const events = await collectEvents(routedFetch({ "/products.json": () => textResponse("nope", 404) }), "https://wordpress-site.com");
+    const caller = await makeCaller();
+    const events = await collectEvents(routedFetch({ "/products.json": () => textResponse("nope", 404) }), "https://wordpress-site.com", caller);
 
     const error = events.find((e) => e.type === "error");
     expect(error).toMatchObject({ type: "error", status: "non_shopify" });
@@ -165,26 +156,29 @@ describe("runAnalysis — failure classification", () => {
     expect(error.message).not.toContain("products.json"); // internal detail, not user-facing
   });
 
-  // Milestone 11, item 1.5: prisma.store.upsert() used to run BEFORE the
-  // crawl proved the domain was even reachable Shopify — Store.tier
-  // defaults to COLD and nextCrawlAt to now(), so every junk domain
-  // (typos, non-Shopify sites, dead domains) immediately entered the
-  // scheduler's due-query and stayed there forever. Now the Store row (and,
-  // since Crawl.storeId is NOT NULL, the Crawl row too) is only ever
-  // written once crawlShopifyStore has actually returned status: "ok".
+  // Milestone 11, item 1.5, PRESERVED here per Milestone 12's explicit
+  // instruction not to regress it: prisma.store.upsert() used to run BEFORE
+  // the crawl proved the domain was even reachable Shopify. Now the Store
+  // row (and, since Crawl.storeId is NOT NULL, the Crawl row too) is only
+  // ever written once crawlShopifyStore has actually returned status: "ok".
+  // See anonymous-probe.integration.test.ts for the SAME invariant on the
+  // anonymous path, which Milestone 12 §1.3 explicitly preserves too.
   it("a domain that fails Shopify detection leaves zero Store rows (and zero Crawl rows) behind", async () => {
-    await collectEvents(routedFetch({ "/products.json": () => textResponse("nope", 404) }), "https://never-seen-before.com");
+    const caller = await makeCaller();
+    await collectEvents(routedFetch({ "/products.json": () => textResponse("nope", 404) }), "https://never-seen-before.com", caller);
 
     expect(await prisma.store.count()).toBe(0);
     expect(await prisma.crawl.count()).toBe(0);
   });
 
   it("a domain that already has a Store row still gets a failed re-crawl recorded internally, curated message to the client", async () => {
+    const caller = await makeCaller();
     const store = await prisma.store.create({ data: { domain: "already-known.com", platform: "SHOPIFY", baselinedAt: new Date() } });
 
     const events = await collectEvents(
       routedFetch({ "/products.json": () => textResponse("nope", 404) }),
       "https://already-known.com",
+      caller,
     );
 
     const error = events.find((e) => e.type === "error");
@@ -202,25 +196,29 @@ describe("runAnalysis — failure classification", () => {
   });
 
   it("classifies a network failure as unreachable and retryable", async () => {
+    const caller = await makeCaller();
     const fetchImpl = vi.fn(async () => {
       throw new Error("getaddrinfo ENOTFOUND");
     }) as unknown as typeof fetch;
 
-    const events = await collectEvents(fetchImpl, "https://offline-store.com");
+    const events = await collectEvents(fetchImpl, "https://offline-store.com", caller);
     const error = events.find((e) => e.type === "error");
     expect(error).toMatchObject({ type: "error", status: "unreachable", retryable: true });
   });
 
   it("classifies zero discovered products as crawl_incomplete", async () => {
+    const caller = await makeCaller();
     const events = await collectEvents(
       routedFetch({ "/products.json": () => jsonResponse({ products: [] }) }),
       "https://empty-store.com",
+      caller,
     );
     const error = events.find((e) => e.type === "error");
     expect(error).toMatchObject({ type: "error", status: "crawl_incomplete" });
   });
 
   it("rejects an SSRF-unsafe target as invalid_url without making any request", async () => {
+    const caller = await makeCaller();
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const events: AnalysisSseEvent[] = [];
     await runAnalysis({
@@ -228,6 +226,7 @@ describe("runAnalysis — failure classification", () => {
       urlInput: "https://internal-target.com",
       fetchImpl,
       dnsLookup: async () => [{ address: "169.254.169.254" }],
+      caller,
       onEvent: (e) => events.push(e),
     });
 
@@ -236,8 +235,9 @@ describe("runAnalysis — failure classification", () => {
   });
 
   it("rejects a malformed URL before touching the database", async () => {
+    const caller = await makeCaller();
     const events: AnalysisSseEvent[] = [];
-    await runAnalysis({ prisma, urlInput: "not a url at all", onEvent: (e) => events.push(e) });
+    await runAnalysis({ prisma, urlInput: "not a url at all", caller, onEvent: (e) => events.push(e) });
 
     expect(events.find((e) => e.type === "error")).toMatchObject({ status: "invalid_url" });
     expect(await prisma.store.count()).toBe(0);
@@ -246,10 +246,11 @@ describe("runAnalysis — failure classification", () => {
 
 describe("runAnalysis — duplicate-analysis guard", () => {
   it("refuses to start a second analysis while one is already RUNNING for the same store", async () => {
+    const caller = await makeCaller();
     const store = await prisma.store.create({ data: { domain: "busy-store.com", platform: "SHOPIFY" } });
     await prisma.crawl.create({ data: { storeId: store.id, status: "RUNNING" } });
 
-    const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://busy-store.com");
+    const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://busy-store.com", caller);
 
     // "validating" always fires first, then the dedup guard stops it there.
     expect(events).toHaveLength(2);
@@ -260,118 +261,107 @@ describe("runAnalysis — duplicate-analysis guard", () => {
   });
 
   it("a RUNNING crawl outside the dedup window doesn't block a fresh analysis", async () => {
+    const caller = await makeCaller();
     const store = await prisma.store.create({ data: { domain: "stale-store.com", platform: "SHOPIFY" } });
     await prisma.crawl.create({
       data: { storeId: store.id, status: "RUNNING", startedAt: new Date(Date.now() - 10 * 60_000) },
     });
 
-    const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://stale-store.com");
+    const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://stale-store.com", caller);
 
     expect(events.find((e) => e.type === "complete")).toBeDefined();
   });
 });
 
-describe("runAnalysis — identity-aware entitlement gating (Milestone 3)", () => {
-  it("an anonymous caller (no `caller`) is never gated — the crawl runs exactly as it always has", async () => {
-    const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://anon-store.com", null);
-    expect(events.find((e) => e.type === "complete")).toBeDefined();
-    expect(await prisma.analysisUsage.count()).toBe(0); // nothing to gate for an anonymous request
-  });
-
-  it("an authenticated user's first three unique stores all succeed and get recorded", async () => {
-    const user = await prisma.user.create({ data: { email: "gate-1@example.com", plan: "FREE" } });
-    const caller = { userId: user.id, plan: "FREE" as const };
+describe("runAnalysis — identity-aware entitlement gating (Milestone 12 §1.1/§1.2 windowed model)", () => {
+  it("an authenticated user's first several unique stores all succeed and get recorded", async () => {
+    const caller = await makeCaller();
 
     for (const domain of ["store-a.com", "store-b.com", "store-c.com"]) {
       const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), `https://${domain}`, caller);
       expect(events.find((e) => e.type === "complete")).toBeDefined();
     }
 
-    expect(await prisma.analysisUsage.count({ where: { userId: user.id } })).toBe(3);
+    expect(await prisma.analysisUsage.count({ where: { userId: caller.userId } })).toBe(3);
   });
 
-  // Pre-existing, unrelated to Milestone 11: the (uncommitted) freemium
-  // redesign already set every PlanTier's maxUniqueAnalyses to null
-  // (unlimited) in plan-limits.ts, so emitLimitReached()'s
-  // analysis_limit_reached path is currently unreachable through any real
-  // plan — there is no longer a finite limit to hit. Skipped rather than
-  // deleted or rewritten to fabricate a plan that doesn't exist: fixing the
-  // entitlement model itself is out of scope here (this milestone is
-  // security/RBAC/promos, not billing), and this preserves the coverage's
-  // intent for whenever a real limited tier exists again.
-  it.skip("a fourth unique store is rejected with analysis_limit_reached BEFORE any crawl runs", async () => {
-    const user = await prisma.user.create({ data: { email: "gate-2@example.com", plan: "FREE" } });
-    const caller = { userId: user.id, plan: "FREE" as const };
-    for (const domain of ["store-a.com", "store-b.com", "store-c.com"]) {
-      await collectEvents(routedFetch(REAL_STORE_ROUTES), `https://${domain}`, caller);
+  // Un-skipped from Milestone 11: that skip was because every plan had
+  // maxUniqueAnalyses: null (unlimited) at the time. Milestone 12 §1.1
+  // reintroduces a real, finite windowed limit (FREE: 10/24h), making this
+  // path reachable again — this is Phase 1's own 2nd acceptance-criterion
+  // bullet, verified end to end through the full runAnalysis() pipeline
+  // (not just analysis-usage.ts directly).
+  it("the 11th unique store in 24h is rejected with analysis_limit_reached BEFORE any crawl runs — the 10th succeeds", async () => {
+    const caller = await makeCaller();
+    for (let i = 0; i < 10; i++) {
+      const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), `https://store-${i}.com`, caller);
+      expect(events.find((e) => e.type === "complete")).toBeDefined();
     }
 
     const fetchImpl = routedFetch(REAL_STORE_ROUTES);
-    const events = await collectEvents(fetchImpl, "https://store-d.com", caller);
+    const events = await collectEvents(fetchImpl, "https://store-11.com", caller);
 
     const error = events.find((e) => e.type === "error");
     expect(error).toMatchObject({ type: "error", status: "analysis_limit_reached" });
+    if (error?.type !== "error") throw new Error("unreachable");
+    expect(error.limitReached).toMatchObject({ code: "LIMIT_REACHED", limit: "ANALYSES_PER_DAY", current: 10, max: 10, upgradeTo: "BASIC" });
     expect(fetchImpl).not.toHaveBeenCalled(); // rejected before the crawl, not after
-    expect(await prisma.analysisUsage.count({ where: { userId: user.id } })).toBe(3); // still exactly 3
+    expect(await prisma.analysisUsage.count({ where: { userId: caller.userId } })).toBe(10); // still exactly 10
   });
 
-  it("re-analyzing an already-counted store does not consume a credit or block a real re-crawl", async () => {
-    const user = await prisma.user.create({ data: { email: "gate-3@example.com", plan: "FREE" } });
-    const caller = { userId: user.id, plan: "FREE" as const };
+  it("D2: re-analyzing an already-counted store WITHIN the window does not consume a credit or block a real re-crawl", async () => {
+    const caller = await makeCaller();
 
     await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://repeat-store.com", caller);
     const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), "https://repeat-store.com", caller);
 
     expect(events.find((e) => e.type === "complete")).toBeDefined(); // real re-analysis still runs
-    expect(await prisma.analysisUsage.count({ where: { userId: user.id } })).toBe(1); // only counted once
+    expect(await prisma.analysisUsage.count({ where: { userId: caller.userId } })).toBe(1); // only counted once
   });
 
   it("a FAILED crawl never burns a credit — caught live: bombas.com returned a real HTTP 429 and still consumed a slot before this fix", async () => {
-    const user = await prisma.user.create({ data: { email: "gate-4@example.com", plan: "FREE" } });
-    const caller = { userId: user.id, plan: "FREE" as const };
+    const caller = await makeCaller();
 
     const failingFetch = vi.fn(async () => {
       throw new Error("getaddrinfo ENOTFOUND");
     }) as unknown as typeof fetch;
     const failedEvents = await collectEvents(failingFetch, "https://flaky-store.com", caller);
     expect(failedEvents.find((e) => e.type === "error")).toMatchObject({ status: "unreachable" });
-    expect(await prisma.analysisUsage.count({ where: { userId: user.id } })).toBe(0); // nothing charged
+    expect(await prisma.analysisUsage.count({ where: { userId: caller.userId } })).toBe(0); // nothing charged
 
-    // The user still has all 3 credits — a retry (or three fresh stores) must all succeed.
+    // The user still has all 10 credits — a retry (or three fresh stores) must all succeed.
     for (const domain of ["retry-a.com", "retry-b.com", "retry-c.com"]) {
       const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), `https://${domain}`, caller);
       expect(events.find((e) => e.type === "complete")).toBeDefined();
     }
-    expect(await prisma.analysisUsage.count({ where: { userId: user.id } })).toBe(3);
+    expect(await prisma.analysisUsage.count({ where: { userId: caller.userId } })).toBe(3);
   });
 
-  // Same pre-existing, unrelated reason as the skipped test above — FREE
-  // has no finite limit to be "past" anymore.
-  it.skip("a store that fails past the free limit still gets a fast, no-crawl rejection (the pre-check optimization)", async () => {
-    const user = await prisma.user.create({ data: { email: "gate-5@example.com", plan: "FREE" } });
-    const caller = { userId: user.id, plan: "FREE" as const };
-    for (const domain of ["store-a.com", "store-b.com", "store-c.com"]) {
-      await collectEvents(routedFetch(REAL_STORE_ROUTES), `https://${domain}`, caller);
+  // Un-skipped from Milestone 11 for the same reason as the 11th-store test
+  // above — a real, finite limit exists again to be "past."
+  it("a store analyzed past the free limit still gets a fast, no-crawl rejection (the pre-check optimization)", async () => {
+    const caller = await makeCaller();
+    for (let i = 0; i < 10; i++) {
+      await collectEvents(routedFetch(REAL_STORE_ROUTES), `https://store-${i}.com`, caller);
     }
 
     const fetchImpl = routedFetch(REAL_STORE_ROUTES);
-    await collectEvents(fetchImpl, "https://store-d.com", caller);
+    await collectEvents(fetchImpl, "https://store-11.com", caller);
     expect(fetchImpl).not.toHaveBeenCalled(); // still fails fast, doesn't waste a crawl once obviously over budget
   });
 
-  it("a BASIC caller's analyses are never gated — well past FREE's 3-store limit, still full access", async () => {
-    const user = await prisma.user.create({ data: { email: "gate-basic@example.com", plan: "BASIC" } });
-    const caller = { userId: user.id, plan: "BASIC" as const };
+  it("a BASIC caller has a real, higher (not unlimited) daily limit — 50/24h, per the Milestone 12 §1.1 matrix", async () => {
+    const caller = await makeCaller("BASIC");
 
     for (const domain of ["basic-a.com", "basic-b.com", "basic-c.com", "basic-d.com", "basic-e.com"]) {
       const events = await collectEvents(routedFetch(REAL_STORE_ROUTES), `https://${domain}`, caller);
       const complete = events.find((e) => e.type === "complete");
       expect(complete).toBeDefined();
       if (complete?.type === "complete" && complete.report.access === "full") {
-        expect(complete.report.entitlement.analysesLimit).toBeNull(); // unlimited, not a number
+        expect(complete.report.entitlement.analysesLimit).toBe(50); // real, not unlimited
       }
     }
 
-    expect(await prisma.analysisUsage.count({ where: { userId: user.id } })).toBe(5);
+    expect(await prisma.analysisUsage.count({ where: { userId: caller.userId } })).toBe(5);
   });
 });

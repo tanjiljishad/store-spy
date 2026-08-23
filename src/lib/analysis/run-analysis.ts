@@ -4,20 +4,32 @@ import { normalizeSnapshot } from "../crawl/normalize";
 import { runDiffAndPersist } from "../diff/persist";
 import type { DnsLookup } from "../security/ssrf-guard";
 import { applyCrawlFailureToStore } from "../monitoring/crawl-outcome";
-import { getAnalysisUsage, hasAnalyzedStore, recordAnalysisUsage } from "../entitlements/analysis-usage";
+import { getAnalysisUsage, hasAnalyzedStoreInWindow, recordAnalysisUsage } from "../entitlements/analysis-usage";
 import { isUnderLimit } from "../entitlements/plan-limits";
 import type { PlanTier } from "../entitlements/plan-limits";
+import { limitReached } from "../entitlements/limit-reached";
 import { permanentlyUnavailable, unavailable } from "./report-contract";
 import { enrichDomainAgeIfUnknown } from "../enrichment/domain-age";
 import { collectStorefrontReviewObservations } from "../reviews/collect";
-import type { AnalysisReport, AnalysisSseEvent, AnalysisStatus, FullStoreReport } from "./types";
+import type { AnalysisSseEvent, AnalysisStatus, FullStoreReport } from "./types";
 
 /**
- * Orchestrates one product-facing "analyze this store" request: validate,
- * crawl, persist (via the existing engine), and hand back a report shaped
- * by who's asking. This is the ONE place that decides what a browser is
- * allowed to see — buildReport()/buildFullStoreReport() below are the
- * entire contract, not a filter applied later.
+ * Orchestrates one product-facing "analyze this store" request for a
+ * SIGNED-IN, entitled caller: validate, crawl, persist (via the existing
+ * engine), and hand back the full report. This is the ONE place that
+ * decides what a browser is allowed to see — buildFullStoreReport() below
+ * is the entire contract, not a filter applied later.
+ *
+ * Milestone 12 §1.3 (D3 amendment): anonymous callers no longer reach this
+ * function at all — `caller` is required. They get a genuinely different,
+ * much cheaper operation instead (analysis/anonymous-probe.ts's
+ * runAnonymousProbe(): one request, no pagination, no enrichment, no Store
+ * row), not a branch of this one. Before this milestone `caller` was
+ * nullable and an anonymous call ran the SAME full multi-request crawl as a
+ * signed-in one, just without spending a credit — that was only ever
+ * reachable in tests (Milestone 11 fix 1.4 already required auth at the
+ * route level), and D3 replaces it outright rather than preserving it as
+ * dead capability.
  *
  * No queue, no worker: this runs in-process for the duration of the request,
  * emitting onEvent() calls the API route streams out as they happen. Real
@@ -32,15 +44,14 @@ export interface RunAnalysisArgs {
   onEvent: (event: AnalysisSseEvent) => void;
   fetchImpl?: FetchLike;
   dnsLookup?: DnsLookup;
-  /** Null for an anonymous caller — the crawl still runs (shared corpus value), but no usage credit is checked or spent. */
-  caller?: { userId: string; plan: PlanTier } | null;
+  caller: { userId: string; plan: PlanTier };
 }
 
 /** A RUNNING crawl older than this is treated as abandoned, not a live duplicate. */
 const DEDUP_WINDOW_MS = 2 * 60_000;
 
 export async function runAnalysis(args: RunAnalysisArgs): Promise<void> {
-  const { prisma, urlInput, onEvent, fetchImpl, dnsLookup, caller = null } = args;
+  const { prisma, urlInput, onEvent, fetchImpl, dnsLookup, caller } = args;
 
   onEvent({ type: "status", status: "validating" });
 
@@ -69,20 +80,21 @@ export async function runAnalysis(args: RunAnalysisArgs): Promise<void> {
   // to be rejected regardless shouldn't cost a real fetch against someone's
   // storefront. This is NOT the authoritative gate (see below): it only
   // reads, it never records, so it introduces no race condition to worry
-  // about. Anonymous callers (caller === null) skip this entirely — the
-  // crawl still runs and benefits the shared corpus, same as it always has.
-  // A domain with no Store row yet has never been analyzed by ANYONE, so
-  // "already analyzed by THIS user" is trivially false — skip the
-  // store-specific hasAnalyzedStore lookup (there's no store.id to check
-  // against) and compare the user's raw usage count directly instead.
-  if (caller) {
-    const analyzed = existingStore ? await hasAnalyzedStore(prisma, caller.userId, existingStore.id) : false;
-    if (!analyzed) {
-      const usage = await getAnalysisUsage(prisma, caller.userId);
-      if (!isUnderLimit(usage.used, usage.limit)) {
-        emitLimitReached(onEvent);
-        return;
-      }
+  // about. A domain with no Store row yet has never been analyzed by
+  // ANYONE, so "already analyzed by THIS user in the current window" is
+  // trivially false — skip the store-specific lookup (there's no store.id
+  // to check against) and compare the user's raw usage count directly
+  // instead. Uses the WINDOWED variant, not the permanent hasAnalyzedStore:
+  // under D2, a store analyzed outside the current 24h window is due a
+  // fresh credit on re-analysis, so the all-time version would wrongly
+  // treat an over-quota caller's stale revisit as free and skip this check.
+  const analyzedInWindow = existingStore ? await hasAnalyzedStoreInWindow(prisma, caller.userId, existingStore.id) : false;
+  if (!analyzedInWindow) {
+    const usage = await getAnalysisUsage(prisma, caller.userId);
+    if (!isUnderLimit(usage.used, usage.limit)) {
+      // isUnderLimit(count, null) is always true, so reaching this branch guarantees usage.limit !== null.
+      emitLimitReached(onEvent, usage.used, usage.limit as number, usage.resetsAt, caller.plan);
+      return;
     }
   }
 
@@ -204,25 +216,22 @@ export async function runAnalysis(args: RunAnalysisArgs): Promise<void> {
   // The authoritative entitlement gate: checked and recorded atomically
   // ONLY once the crawl has actually succeeded. This is deliberately after
   // the crawl, not before — a request that fails (unreachable, blocked,
-  // rate-limited by the target store) must never burn one of a user's 3
-  // lifetime credits on a report they never actually got. See
+  // rate-limited by the target store) must never burn one of a user's daily
+  // credits on a report they never actually got. See
   // entitlements/analysis-usage.ts for the concurrency-safe accounting
   // (two simultaneous requests from a user with one credit left cannot
   // both succeed) — the pre-check above is just a fast-fail optimization,
   // this is the real gate.
-  let alreadyAnalyzed = false;
-  if (caller) {
-    const usage = await recordAnalysisUsage(prisma, caller.userId, store.id, caller.plan);
-    if (usage.outcome === "limit_reached") {
-      emitLimitReached(onEvent);
-      return;
-    }
-    alreadyAnalyzed = usage.outcome === "already_counted";
+  const usage = await recordAnalysisUsage(prisma, caller.userId, store.id, caller.plan);
+  if (usage.outcome === "limit_reached") {
+    emitLimitReached(onEvent, usage.current, usage.max, usage.resetsAt, caller.plan);
+    return;
   }
+  const alreadyAnalyzed = usage.outcome === "already_counted";
 
   onEvent({ type: "status", status: "analyzing" });
 
-  const report = await buildReport(prisma, store.id, domain, caller, alreadyAnalyzed);
+  const report = await buildFullStoreReport(prisma, store.id, domain, caller.userId, alreadyAnalyzed);
 
   onEvent({ type: "status", status: "completed" });
   onEvent({ type: "complete", report });
@@ -250,16 +259,24 @@ export async function runAnalysis(args: RunAnalysisArgs): Promise<void> {
   }
 }
 
-function emitLimitReached(onEvent: (event: AnalysisSseEvent) => void): void {
+function emitLimitReached(
+  onEvent: (event: AnalysisSseEvent) => void,
+  current: number,
+  max: number,
+  resetsAt: Date | null,
+  plan: PlanTier,
+): void {
   onEvent({
     type: "error",
     status: "analysis_limit_reached",
-    message: "This analysis is unavailable.",
+    message: `You've reached your limit of ${max} analyses in 24 hours. Upgrade for a higher daily limit.`,
     retryable: false,
+    limitReached: limitReached({ limit: "ANALYSES_PER_DAY", current, max, resetsAt, plan }),
   });
 }
 
-function classifyCrawlFailure(
+/** Exported for analysis/anonymous-probe.ts — the shallow probe's failure shape is the identical Exclude<CrawlResult, {status:"ok"}> union, so it reuses this classification rather than a second copy. */
+export function classifyCrawlFailure(
   result: Exclude<CrawlResult, { status: "ok" }>,
 ): { status: AnalysisStatus; message: string } {
   switch (result.status) {
@@ -283,32 +300,6 @@ function classifyCrawlFailure(
         message: "We couldn't reach this store. It may be temporarily down. Try again in a few minutes.",
       };
   }
-}
-
-async function buildReport(
-  prisma: PrismaClient,
-  storeId: string,
-  domain: string,
-  caller: { userId: string; plan: PlanTier } | null,
-  alreadyAnalyzed: boolean,
-): Promise<AnalysisReport> {
-  if (!caller) {
-    const [store, productCount] = await Promise.all([
-      prisma.store.findUniqueOrThrow({ where: { id: storeId } }),
-      prisma.product.count({ where: { storeId, status: "ACTIVE" } }),
-    ]);
-    return {
-      access: "anonymous_preview",
-      domain,
-      platform: "shopify",
-      productCount,
-      theme: { name: store.themeName, version: store.themeVersion },
-      checkedAt: new Date().toISOString(),
-      cta: "Create a free account to unlock the complete store intelligence — full app stack, pricing, activity, and monitoring.",
-    };
-  }
-
-  return buildFullStoreReport(prisma, storeId, domain, caller.userId, alreadyAnalyzed);
 }
 
 /**
@@ -372,6 +363,11 @@ export async function buildFullStoreReport(
       nextCrawlAt: store.tier === "DISABLED" ? null : store.nextCrawlAt.toISOString(),
       totalCrawls,
     },
-    entitlement: { analysesUsed: usage.used, analysesLimit: usage.limit, alreadyAnalyzed },
+    entitlement: {
+      analysesUsed: usage.used,
+      analysesLimit: usage.limit,
+      resetsAt: usage.resetsAt?.toISOString() ?? null,
+      alreadyAnalyzed,
+    },
   };
 }

@@ -1,5 +1,7 @@
 import { requireUser, ForbiddenError, UnauthorizedError, type CurrentUser } from "../auth/session";
+import { prisma } from "../db/prisma";
 import { hasPermission, type Permission } from "./roles";
+import { hasActiveGrant } from "./permissions-service";
 
 export type AdminActor = CurrentUser;
 
@@ -10,13 +12,21 @@ export type AdminActor = CurrentUser;
  * top of it. Throws UnauthorizedError (via requireUser()) for no session,
  * ForbiddenError for a session that lacks the permission — routes map both
  * to the right status with withAdminRoute() below, never directly.
+ *
+ * Milestone 12 §2.1: checks the role first (no DB query — hasPermission()
+ * is a pure in-memory lookup) and only falls through to a grant lookup when
+ * the role alone doesn't already cover it, so the common case (a role that
+ * already has the permission) pays no extra query cost. Deliberately reads
+ * grants live, on every call, the same way Milestone 11's amended `jwt`
+ * callback re-reads `role` on every request for a non-USER role — caching
+ * grants in the token would reintroduce exactly the staleness window that
+ * amendment closed. See permissions-service.ts's hasActiveGrant().
  */
 export async function requirePermission(permission: Permission): Promise<AdminActor> {
   const actor = await requireUser();
-  if (!hasPermission(actor.role, permission)) {
-    throw new ForbiddenError(`Missing permission: ${permission}`);
-  }
-  return actor;
+  if (hasPermission(actor.role, permission)) return actor;
+  if (await hasActiveGrant(prisma, actor.id, permission)) return actor;
+  throw new ForbiddenError(`Missing permission: ${permission}`);
 }
 
 /**

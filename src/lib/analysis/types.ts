@@ -1,6 +1,7 @@
 import type { CrawlPhase } from "../crawl/shopify";
 import type { IntelligenceField } from "./report-contract";
 import type { Limit } from "../entitlements/plan-limits";
+import type { LimitReachedResponse } from "../entitlements/limit-reached";
 
 /**
  * Typed job lifecycle — nothing downstream should compare against a raw
@@ -20,6 +21,10 @@ export type AnalysisStatus =
   | "unreachable"
   | "crawl_incomplete"
   | "analysis_limit_reached"
+  /** Milestone 12 §1.3: anonymous-only failure modes — never emitted for a signed-in caller. */
+  | "anonymous_limit_reached"
+  | "turnstile_failed"
+  | "service_unavailable"
   | "failed";
 
 export const FAILURE_STATUSES: ReadonlySet<AnalysisStatus> = new Set([
@@ -28,6 +33,9 @@ export const FAILURE_STATUSES: ReadonlySet<AnalysisStatus> = new Set([
   "unreachable",
   "crawl_incomplete",
   "analysis_limit_reached",
+  "anonymous_limit_reached",
+  "turnstile_failed",
+  "service_unavailable",
   "failed",
 ]);
 
@@ -70,6 +78,28 @@ export interface UnanalyzedPreviewReport extends PreviewReportFields {
 }
 
 /**
+ * Milestone 12 §1.3 (D3 amendment): what a fresh, anonymous `POST
+ * /api/analyze` produces — genuinely distinct from AnonymousPreviewReport
+ * above, which is what GET /api/store/[domain]/report returns for an
+ * anonymous viewer of a store someone ELSE already fully crawled (real
+ * theme data, because a real full crawl actually happened for that store).
+ * This shape can never have theme/app/pixel data: the shallow probe that
+ * produces it makes exactly one request (products.json page 1) and never
+ * fetches the homepage that fingerprinting depends on, and never writes a
+ * Store row at all (fix 1.5) — there's nothing to read theme data back from
+ * even on a later visit.
+ */
+export interface AnonymousProbeReport {
+  access: "anonymous_probe";
+  domain: string;
+  platform: "shopify";
+  productCount: number;
+  priceRange: { minCents: number | null; maxCents: number | null };
+  checkedAt: string;
+  cta: string;
+}
+
+/**
  * The complete currently-supported intelligence report for a signed-in,
  * entitled user (Milestone 3). Every field that carries real intelligence
  * is wrapped in an IntelligenceField so the client always knows whether
@@ -96,13 +126,16 @@ export interface FullStoreReport {
   traffic: IntelligenceField<{ monthlyVisits: number }>;
   reviewVelocity: IntelligenceField<{ reviewsPerMonth: number }>;
   monitoring: MonitoringStatus;
-  entitlement: { analysesUsed: number; analysesLimit: Limit; alreadyAnalyzed: boolean };
+  entitlement: { analysesUsed: number; analysesLimit: Limit; resetsAt: string | null; alreadyAnalyzed: boolean };
 }
 
-export type AnalysisReport = AnonymousPreviewReport | UnanalyzedPreviewReport | FullStoreReport;
+export type AnalysisReport = AnonymousPreviewReport | UnanalyzedPreviewReport | AnonymousProbeReport | FullStoreReport;
+
+/** Milestone 12 §1.5 — the structured reason a LIMIT_REACHED analysis rejection carries, alongside the existing generic error message/status. Reuses entitlements/limit-reached.ts's shape rather than a second copy — analyze/route.ts only ever populates it with an ANALYSES_PER_DAY reason, but the type stays the general one so it can't silently drift from the shape watch/route.ts's JSON responses use for the other two kinds. */
+export type LimitReachedDetail = LimitReachedResponse;
 
 export type AnalysisSseEvent =
   | { type: "status"; status: AnalysisStatus }
   | { type: "progress"; phase: CrawlPhase; message: string; detail?: Record<string, unknown> }
   | { type: "complete"; report: AnalysisReport }
-  | { type: "error"; status: AnalysisStatus; message: string; retryable: boolean };
+  | { type: "error"; status: AnalysisStatus; message: string; retryable: boolean; limitReached?: LimitReachedDetail };

@@ -1,24 +1,34 @@
 import type { PrismaClient } from "@prisma/client";
-import { maxUniqueAnalyses } from "./entitlement-service";
+import { maxAnalysesPer24h } from "./entitlement-service";
 import { isUnderLimit } from "./plan-limits";
 import type { Limit, PlanTier } from "./plan-limits";
 
 /**
- * The server-side ledger for "how many unique stores has this user
- * analyzed" (spec section 19-20). recordAnalysisUsage() is the only write
- * path and is race-safe under concurrent requests: two simultaneous calls
- * for the SAME user (even for two different new stores) cannot both
- * succeed past a limit of N, because pg_advisory_xact_lock serializes them
- * on userId for the lifetime of the transaction — the second call simply
- * waits for the first to commit (or roll back) before it even runs its own
- * count, rather than racing a check-then-insert. Different users never
- * block each other; the lock key is scoped to userId.
+ * Milestone 12 §1.2: the server-side ledger for "how many analyses has this
+ * user run in the last 24 hours" — replaces the old lifetime "unique stores
+ * ever analyzed" model. The table is append-only (one row per analysis RUN,
+ * not per unique store); recordAnalysisUsage() is still the only write path
+ * and is still race-safe under concurrent requests the same way it always
+ * was: pg_advisory_xact_lock on userId serializes two simultaneous calls
+ * for the SAME user so the second one's count always sees the first one's
+ * write (or rollback), never racing a check-then-insert. Different users
+ * never block each other.
+ *
+ * hasAnalyzedStore() answers a DIFFERENT, PERMANENT question — "has this
+ * user ever analyzed this store at all" — which grants lasting `full`
+ * report access (see auth/store-access.ts's resolveStoreAccess(), a
+ * Milestone 11 fix this milestone must not regress). That is unaffected by
+ * the windowing change: it is now an EXISTS-shaped query instead of a
+ * unique-row lookup, but the answer for any given (userId, storeId) is
+ * identical either way, and it keeps working with duplicate rows.
  */
+
+const WINDOW_HOURS = 24;
 
 export type RecordAnalysisUsageResult =
   | { outcome: "recorded" }
-  | { outcome: "already_counted" } // re-analyzing a store already in the ledger — free, no credit spent
-  | { outcome: "limit_reached"; code: "ANALYSIS_LIMIT_REACHED"; capability: "MAX_UNIQUE_ANALYSES" };
+  | { outcome: "already_counted" } // same store re-analyzed inside the current 24h window — free, no credit spent (D2)
+  | { outcome: "limit_reached"; current: number; max: number; resetsAt: Date | null };
 
 export async function recordAnalysisUsage(
   prisma: PrismaClient,
@@ -26,18 +36,35 @@ export async function recordAnalysisUsage(
   storeId: string,
   plan: PlanTier,
 ): Promise<RecordAnalysisUsageResult> {
+  const windowStart = new Date(Date.now() - WINDOW_HOURS * 60 * 60_000);
+
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('analysis:' || ${userId})::bigint)`;
 
-    const existing = await tx.analysisUsage.findUnique({
-      where: { userId_storeId: { userId, storeId } },
+    // D2: a repeat analysis of the SAME store inside the current window is
+    // free — checked before the quota count, and before insert, all inside
+    // the same lock so it can never race a limit_reached decision.
+    const existingInWindow = await tx.analysisUsage.findFirst({
+      where: { userId, storeId, createdAt: { gte: windowStart } },
       select: { id: true },
     });
-    if (existing) return { outcome: "already_counted" };
+    if (existingInWindow) return { outcome: "already_counted" };
 
-    const count = await tx.analysisUsage.count({ where: { userId } });
-    if (!isUnderLimit(count, maxUniqueAnalyses(plan))) {
-      return { outcome: "limit_reached", code: "ANALYSIS_LIMIT_REACHED", capability: "MAX_UNIQUE_ANALYSES" };
+    const windowRows = await tx.analysisUsage.findMany({
+      where: { userId, createdAt: { gte: windowStart } },
+      select: { createdAt: true },
+      orderBy: { createdAt: "asc" },
+    });
+    const max = maxAnalysesPer24h(plan);
+    if (!isUnderLimit(windowRows.length, max)) {
+      // The oldest row in the window is the one that determines when a slot
+      // frees up next — it falls out of the rolling window exactly WINDOW_HOURS after it was written.
+      const oldest = windowRows[0]?.createdAt ?? null;
+      const resetsAt = oldest ? new Date(oldest.getTime() + WINDOW_HOURS * 60 * 60_000) : null;
+      // isUnderLimit(count, null) is always true, so reaching this branch
+      // guarantees max !== null — it's typed Limit only because
+      // maxAnalysesPer24h() is shared with the unlimited case.
+      return { outcome: "limit_reached", current: windowRows.length, max: max as number, resetsAt };
     }
 
     await tx.analysisUsage.create({ data: { userId, storeId } });
@@ -45,21 +72,84 @@ export async function recordAnalysisUsage(
   });
 }
 
+/**
+ * Permanent, non-windowed "has this user ever analyzed this store" —
+ * Milestone 11's resolveStoreAccess() gate. Deliberately NOT scoped to the
+ * 24h window: a credit spent last month still earns permanent `full` access
+ * to that store's report.
+ */
 export async function hasAnalyzedStore(prisma: PrismaClient, userId: string, storeId: string): Promise<boolean> {
-  const existing = await prisma.analysisUsage.findUnique({
-    where: { userId_storeId: { userId, storeId } },
+  const existing = await prisma.analysisUsage.findFirst({
+    where: { userId, storeId },
     select: { id: true },
   });
   return existing !== null;
 }
 
+/**
+ * Windowed variant of hasAnalyzedStore() — "has this user analyzed this
+ * store inside the CURRENT 24h window", used only as run-analysis.ts's
+ * fast-fail pre-check optimization (skip a wasted crawl for a caller who's
+ * obviously already over quota). Deliberately distinct from the permanent,
+ * all-time hasAnalyzedStore(): under the windowed model a store analyzed
+ * outside the window is due a fresh credit on re-analysis (D2), so the
+ * all-time version would wrongly treat a stale revisit as "already free."
+ * recordAnalysisUsage() remains the actual authoritative gate either way.
+ */
+export async function hasAnalyzedStoreInWindow(
+  prisma: PrismaClient,
+  userId: string,
+  storeId: string,
+  windowHours: number = WINDOW_HOURS,
+): Promise<boolean> {
+  const existing = await prisma.analysisUsage.findFirst({
+    where: { userId, storeId, createdAt: { gte: new Date(Date.now() - windowHours * 60 * 60_000) } },
+    select: { id: true },
+  });
+  return existing !== null;
+}
+
+export async function countAnalysesInWindow(
+  prisma: PrismaClient,
+  userId: string,
+  windowHours: number = WINDOW_HOURS,
+): Promise<number> {
+  return prisma.analysisUsage.count({
+    where: { userId, createdAt: { gte: new Date(Date.now() - windowHours * 60 * 60_000) } },
+  });
+}
+
 export async function getAnalysisUsage(
   prisma: PrismaClient,
   userId: string,
-): Promise<{ used: number; limit: Limit; storeIds: string[] }> {
+): Promise<{ used: number; limit: Limit; resetsAt: Date | null }> {
+  const windowStart = new Date(Date.now() - WINDOW_HOURS * 60 * 60_000);
   const [rows, user] = await Promise.all([
-    prisma.analysisUsage.findMany({ where: { userId }, select: { storeId: true } }),
+    prisma.analysisUsage.findMany({
+      where: { userId, createdAt: { gte: windowStart } },
+      select: { createdAt: true },
+      orderBy: { createdAt: "asc" },
+    }),
     prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { plan: true } }),
   ]);
-  return { used: rows.length, limit: maxUniqueAnalyses(user.plan), storeIds: rows.map((r) => r.storeId) };
+  const oldest = rows[0]?.createdAt ?? null;
+  return {
+    used: rows.length,
+    limit: maxAnalysesPer24h(user.plan),
+    resetsAt: oldest ? new Date(oldest.getTime() + WINDOW_HOURS * 60 * 60_000) : null,
+  };
+}
+
+const SWEEP_MAX_AGE_DAYS = 30;
+
+/**
+ * Milestone 12 §1.2: rows older than 30 days are no longer needed for the
+ * 24h quota — kept that long specifically for Phase 3's admin analytics
+ * (usage-over-time), not swept immediately once outside the window like
+ * AnonymousAnalysis is. Run from the worker tick, next to the other sweeps.
+ */
+export async function sweepOldAnalysisUsage(prisma: PrismaClient, now: Date = new Date()): Promise<{ deletedCount: number }> {
+  const cutoff = new Date(now.getTime() - SWEEP_MAX_AGE_DAYS * 24 * 60 * 60_000);
+  const result = await prisma.analysisUsage.deleteMany({ where: { createdAt: { lt: cutoff } } });
+  return { deletedCount: result.count };
 }

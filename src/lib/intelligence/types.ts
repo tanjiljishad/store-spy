@@ -139,6 +139,6 @@ export interface StoreIntelligenceReport {
   reviews: ReviewsSection;
   commercial: CommercialSection;
   monitoring: MonitoringStatus;
-  entitlement: { analysesUsed: number; analysesLimit: Limit; alreadyAnalyzed: boolean };
+  entitlement: { analysesUsed: number; analysesLimit: Limit; resetsAt: string | null; alreadyAnalyzed: boolean };
   meta: ReportMeta;
 }

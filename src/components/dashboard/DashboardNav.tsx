@@ -11,6 +11,7 @@ export interface DashboardNavProps {
 const LINKS = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/dashboard/watchlist", label: "Watchlist" },
+  { href: "/dashboard/settings", label: "Settings" },
 ];
 
 export function DashboardNav({ email }: DashboardNavProps) {

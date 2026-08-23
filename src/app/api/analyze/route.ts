@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { runAnalysis } from "@/lib/analysis/run-analysis";
+import { runAnonymousProbe } from "@/lib/analysis/anonymous-probe";
 import { checkRateLimit, getClientIp } from "@/lib/security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
 import type { PlanTier } from "@/lib/entitlements/plan-limits";
@@ -9,6 +10,14 @@ import type { AnalysisSseEvent } from "@/lib/analysis/types";
 export const runtime = "nodejs"; // needs real DNS resolution + Prisma — not available on the Edge runtime
 
 const IP_RATE_LIMIT = { limit: 5, windowMs: 60_000 };
+const DEFAULT_ANONYMOUS_CRAWL_HOURLY_CEILING = 500;
+
+function anonymousCrawlHourlyCeiling(): number {
+  const raw = process.env.ANONYMOUS_CRAWL_HOURLY_CEILING;
+  const n = raw === undefined ? NaN : Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_ANONYMOUS_CRAWL_HOURLY_CEILING;
+}
+
 /**
  * A second, independent limiter dimension keyed on userId, not IP. Each
  * accepted request fans out to up to 60 paginated fetches against a real
@@ -47,23 +56,6 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "Something went wrong on our end. Please try again." }, { status: 500 });
   }
 
-  // Triggering a real, potentially expensive outbound crawl requires an
-  // account — see this milestone's doc, item 1.4. The anonymous PREVIEW
-  // shape (access: "anonymous_preview") still exists and is still reachable
-  // through GET /api/store/[domain]/report for a store someone else already
-  // crawled; only the ability to trigger a NEW crawl becomes authenticated.
-  if (!user) {
-    return Response.json({ error: "Sign in to analyze a store." }, { status: 401 });
-  }
-
-  const userRate = checkRateLimit(`analyze:user:${user.id}`, USER_RATE_LIMIT);
-  if (!userRate.allowed) {
-    return Response.json(
-      { error: "You've reached the hourly limit for new analyses. Try again later." },
-      { status: 429, headers: { "retry-after": String(Math.ceil(userRate.retryAfterMs / 1000)) } },
-    );
-  }
-
   let body: unknown;
   try {
     body = await req.json();
@@ -79,8 +71,44 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "URL is too long" }, { status: 400 });
   }
 
-  const caller = { userId: user.id, plan: user.plan as PlanTier };
+  // Milestone 12 §1.3 (D3 amendment): reinstates anonymous access, capped
+  // and shaped very differently from a signed-in request — see
+  // analysis/anonymous-probe.ts. Milestone 11 fix 1.4 made a signed-in
+  // account required for ANY crawl; this narrows that back to "required for
+  // a full crawl," not lifted wholesale.
+  if (!user) {
+    const turnstileToken = isRecord(body) && typeof body.turnstileToken === "string" ? body.turnstileToken : null;
+    return streamAnalysis((send) =>
+      runAnonymousProbe({
+        prisma,
+        urlInput: url,
+        ipKey: ip,
+        turnstileToken,
+        onEvent: send,
+        hourlyCeiling: anonymousCrawlHourlyCeiling(),
+      }),
+    );
+  }
 
+  const userRate = checkRateLimit(`analyze:user:${user.id}`, USER_RATE_LIMIT);
+  if (!userRate.allowed) {
+    return Response.json(
+      { error: "You've reached the hourly limit for new analyses. Try again later." },
+      { status: 429, headers: { "retry-after": String(Math.ceil(userRate.retryAfterMs / 1000)) } },
+    );
+  }
+
+  const caller = { userId: user.id, plan: user.plan as PlanTier };
+  return streamAnalysis((send) => runAnalysis({ prisma, urlInput: url, onEvent: send, caller }));
+}
+
+/**
+ * Shared SSE plumbing for both the authenticated (runAnalysis) and
+ * anonymous (runAnonymousProbe) paths — identical stream lifecycle, only
+ * the orchestrator function differs. See the disconnect-handling comment
+ * below for why `closed` must be visible to both start() and cancel().
+ */
+function streamAnalysis(run: (send: (event: AnalysisSseEvent) => void) => Promise<void>): Response {
   // Shared across start()/cancel() — a client disconnect (nav away, closed
   // tab, dropped connection) invokes cancel() on a SEPARATE method of this
   // same underlying-source object, not inside start()'s own closure. This
@@ -102,7 +130,7 @@ export async function POST(req: NextRequest) {
       };
 
       try {
-        await runAnalysis({ prisma, urlInput: url, onEvent: send, caller });
+        await run(send);
       } catch (e) {
         if (closed) return; // client already disconnected — nothing left to report to
         // Never forward internal error detail/stack traces to the client.

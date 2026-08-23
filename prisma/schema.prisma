@@ -462,6 +462,12 @@ enum PlanTier {
 /// never a raw role-string comparison in route/service code. SUPER_ADMIN is
 /// bootstrap-only (scripts/grant-admin.ts); no HTTP route can grant it — see
 /// PATCH /api/admin/users/[id]/role's own invariant checks.
+///
+/// Milestone 12 §2.3: MARKETING_ADMIN and MANAGER are the only two roles
+/// added for the new org shape — everyone else gets a base role plus
+/// per-user AdminPermissionGrant rows (§2.1) rather than a bespoke role per
+/// employee. MANAGER is the union of SUPPORT_ADMIN and OPS_ADMIN plus
+/// audit:read (see roles.ts's ROLE_PERMISSIONS for the literal set).
 enum Role {
   USER
   ANALYST
@@ -469,6 +475,8 @@ enum Role {
   SUPPORT_ADMIN
   BILLING_ADMIN
   OPS_ADMIN
+  MARKETING_ADMIN
+  MANAGER
   SUPER_ADMIN
 }
 
@@ -491,6 +499,69 @@ model User {
   /// existing token is still valid. Set via POST
   /// /api/admin/users/[id]/revoke-sessions in Phase 2.
   sessionsValidAfter DateTime?
+  /// Milestone 12 §1.4, per D1: anchored to account creation, never to first
+  /// watch or first analysis — set once at insert time via a DB-level
+  /// default (`now() + 30 days`) so every creation path (signup route,
+  /// OAuth first sign-in through the Auth.js Prisma adapter, the admin
+  /// bootstrap script) gets it uniformly with no risk of a missed call site.
+  /// Only ever read for a FREE-plan user (monitoring/watch.ts); ignored for
+  /// paid plans, so an upgrade never needs to null it back out.
+  ///
+  /// The `AT TIME ZONE 'UTC'` is not decorative — see AGENTS.md's Database
+  /// time rule. Unlike Prisma's own `@default(now())` fields (createdAt,
+  /// etc.), which Prisma's query engine populates client-side with an
+  /// explicit, already-UTC-safe parameter and never actually invokes this
+  /// column's SQL-level DEFAULT to do it, THIS default genuinely does fire
+  /// at insert time for every real caller (prisma.user.create() has no
+  /// client-side special-casing for a non-`now()` default expression).
+  /// Confirmed live: with a non-UTC session TimeZone (Asia/Dhaka, this
+  /// project's own dev Postgres — the exact scenario AGENTS.md documents),
+  /// `now() + interval '30 days'` cast bare into this timestamp(3) column
+  /// landed 6 hours off from `createdAt + 30 days`; wrapping the whole
+  /// expression in `AT TIME ZONE 'UTC'` fixed it, verified against the same
+  /// session.
+  freeTrialEndsAt DateTime? @default(dbgenerated("((now() + interval '30 days') AT TIME ZONE 'UTC')"))
+  /// Milestone 12 §4.1: a SEPARATE, unticked-by-default opt-in — never
+  /// bundled into ToS acceptance (bundled consent is not valid consent
+  /// under GDPR/PECR). Defaults to `false` for every creation path,
+  /// including OAuth first sign-in through the Auth.js Prisma adapter,
+  /// which has no consent-checkbox moment at all: "no consent was ever
+  /// asked or given" and "explicitly declined" are indistinguishable here
+  /// by design, and both correctly mean "do not send marketing email."
+  /// `POST /api/admin/users/export`'s `purpose:"marketing"` branch
+  /// (analytics/user-export.ts) filters on this field — never on
+  /// `emailVerified` or any other proxy.
+  marketingConsent       Boolean   @default(false)
+  /// Set only when `marketingConsent` is actually granted (`true`) — there
+  /// is no "consent event" to timestamp when it's merely left at its
+  /// default `false`. Read by `GET /api/unsubscribe` alongside
+  /// `marketingConsentSource` as part of the record of what was granted,
+  /// when, and from where; NOT cleared on unsubscribe (unsubscribeMarketing()
+  /// only flips `marketingConsent` back to `false`) — the original grant
+  /// timestamp/source stays the historical record of record, the same
+  /// append-only-history spirit as `AdminAuditLog`.
+  marketingConsentAt     DateTime?
+  /// Free text, not an enum, matching `AdminAuditLog.action`'s own
+  /// convention — a new consent-capture surface (e.g. a future checkout
+  /// upsell) shouldn't require a migration. `"signup_form"` is the only
+  /// value this milestone's own code ever writes.
+  marketingConsentSource String?
+  /// Milestone 12 §4.1 addendum: set the moment ToS is accepted, on
+  /// EITHER signup path. Credentials signup sets it synchronously, in the
+  /// same `create()` call as the row itself (the route already validates
+  /// `tosAccepted === true` before allowing signup at all). OAuth first
+  /// sign-in has no such moment — the Auth.js Prisma adapter creates this
+  /// row directly with no consent step of its own — so it stays null
+  /// until the post-OAuth consent interstitial (`/welcome`,
+  /// `POST /api/account/consent`) sets it. Null is the ONE condition
+  /// `DashboardLayout` checks (a fresh read, not the JWT — see its own
+  /// comment for why) to gate access: no dashboard page renders for an
+  /// account that has never accepted, regardless of which path created it.
+  /// Never backdated for pre-existing accounts created before this field
+  /// existed — fabricating a consent timestamp that was never actually
+  /// given would defeat the entire point; those accounts see the
+  /// interstitial once, the same as any other un-consented account.
+  tosAcceptedAt DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -498,16 +569,40 @@ model User {
   sessions      Session[]
   watchlists    Watchlist[]
   analysisUsage AnalysisUsage[]
+  /// Grants held BY this user — see AdminPermissionGrant's own doc comment
+  /// for why grantedByUserId (the OTHER direction) is deliberately not a
+  /// second relation here.
+  permissionGrants AdminPermissionGrant[]
 
   @@index([role])
 }
 
 /// Append-only, in the same transaction as the change it records (see
 /// recordAdminAction() in src/lib/admin/audit.ts) — if the audit write
-/// fails, the change it was recording rolls back with it. No update or
-/// delete path exists anywhere in the code; `actorEmail` is denormalized
-/// on purpose so the log stays readable even after the actor's own User
-/// row is later deleted.
+/// fails, the change it was recording rolls back with it. `actorId`/
+/// `targetId` are plain Strings, not FK relations to User — deliberately,
+/// so a later `User` deletion never cascades into this table structurally.
+///
+/// Exactly one narrow, deliberate exception to "no update path exists":
+/// Milestone 12 §4.1's GDPR Art. 17 self-service account deletion
+/// (`src/lib/account/delete.ts`) tombstones — never deletes — every row
+/// where `actorId` or (`targetType = "User"` and) `targetId` matches the
+/// erased user, replacing that id with a stable, non-reversible
+/// `deleted:<originalId>` marker and redacting `actorEmail` to a fixed
+/// placeholder. "An audit log that can be erased by its subject is not an
+/// audit log" — the fact that an action happened, when, and what it was
+/// survives; the erased person's own identifying details do not. This is a
+/// genuine narrowing of the original "actorEmail is denormalized so the
+/// log stays readable even after the actor's own account is gone" design:
+/// that reasoning holds for an ADMIN employee's account being deprovisioned
+/// (readability matters more than an internal employee's email staying
+/// visible forever), but not for a paying CUSTOMER's own GDPR erasure
+/// request, which is a real legal obligation to actually remove their PII.
+/// `metadata` (a free-form JSON blob whose shape varies per `action`) is
+/// NOT scrubbed by this tombstoning — a known, disclosed limitation, not an
+/// oversight; some actions (e.g. `subscription.expire`) embed a `userEmail`
+/// field there that a full metadata-level PII scrubber would need to
+/// understand per action type. See the Milestone 12 completion report.
 model AdminAuditLog {
   id         String   @id @default(cuid())
   actorId    String
@@ -520,6 +615,60 @@ model AdminAuditLog {
 
   @@index([actorId, createdAt])
   @@index([targetType, targetId])
+}
+
+/// Milestone 12 §2.1: per-employee permission grants layered ON TOP of the
+/// role matrix — never a replacement for it. Additive only, by construction
+/// of how effectivePermissions() (roles.ts) combines the two: a grant can
+/// only ever widen a user's effective set beyond their role's baseline,
+/// never narrow it. Narrowing is done by changing the role.
+///
+/// Append-only, same discipline as AdminAuditLog: a row is never deleted,
+/// and revocation/expiry both work by SETTING revokedAt, never by removing
+/// the row — "the audit trail must survive" is the doc's own words. A grant
+/// that later expires on its own (expiresAt reached) is ALSO marked
+/// revokedAt by the worker's sweep (expireDuePermissionGrants(),
+/// scripts/worker.ts) so "is this grant currently active" is always a
+/// single `revokedAt IS NULL` check at the DB level — permissions-service.ts's
+/// own live queries additionally re-check expiresAt directly (not just
+/// relying on the sweep having already run), so a grant stops applying the
+/// instant it expires, not up to one worker-tick-interval later; the sweep
+/// exists for the audit trail's bookkeeping, not as the enforcement
+/// mechanism.
+///
+/// `permission` is a plain String, not an enum, matching AdminAuditLog's
+/// own `action`/`targetType` convention — a new Permission value should
+/// never require a migration. `grantedByUserId` is deliberately a plain
+/// field, NOT a relation: the granting admin's own User row may later be
+/// deleted (deprovisioned), and the grant they issued to someone ELSE must
+/// keep working — the exact same "denormalized so the log stays readable
+/// after the actor's own User row is deleted" reasoning as
+/// AdminAuditLog.actorEmail. The TARGET (userId) relation, by contrast, DOES
+/// cascade — once the target user themselves is gone there's nothing left
+/// to apply the grant to, and AdminAuditLog already preserves the
+/// permanent, human-readable record of the grant/revoke actions themselves.
+///
+/// A partial unique index — `CREATE UNIQUE INDEX ... ON ("userId",
+/// "permission") WHERE "revokedAt" IS NULL` — is added by hand in this
+/// migration's SQL (Prisma's schema DSL has no way to express a WHERE
+/// clause on @@unique, and Postgres partial-index predicates must be
+/// immutable, so it can only check revokedAt IS NULL, not also `expiresAt >
+/// now()`) as defense in depth alongside grantPermission()'s own
+/// advisory-lock + check-then-insert; not declared as @@unique here since
+/// Prisma would then try to manage a plain (non-partial) constraint that
+/// doesn't match what's actually in the database.
+model AdminPermissionGrant {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission       String
+  grantedByUserId  String
+  grantedAt        DateTime  @default(now())
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+
+  @@index([userId, permission])
+  @@index([expiresAt])
 }
 
 /// One row per credentials-login attempt, success or failure — the durable,
@@ -637,14 +786,22 @@ model Watchlist {
   @@index([monitoringStatus, monitoringExpiresAt])
 }
 
-/// The server-side usage ledger for the free-tier "3 unique stores" limit.
-/// One row per (userId, storeId) ever analyzed — re-analyzing the same
-/// canonical store is a no-op against this table (unique constraint), and
-/// "how many unique stores has this user analyzed" is just a COUNT of it.
-/// Never trust a client-supplied count; this table is the only source of
-/// truth. See recordAnalysisUsage() in src/lib/entitlements/ for the
-/// advisory-lock pattern that keeps concurrent requests from a user with
-/// one credit left from consuming two.
+/// Milestone 12 §1.2: the server-side usage ledger for the rolling
+/// "analyses per 24h" quota — append-only, one row per analysis RUN, not per
+/// unique store. Before this milestone the table answered "how many unique
+/// stores has this user ever analyzed" (a `@@unique([userId, storeId])`
+/// lifetime-count model); the product now needs "how many analyses in the
+/// last 24 hours", which requires the same store to be able to appear more
+/// than once (a fresh analysis of it after the window resets is a genuine
+/// new analysis run). hasAnalyzedStore() (src/lib/entitlements/) still
+/// answers the separate, PERMANENT question "has this user ever analyzed
+/// this store at all" — that grants lasting `full` report access
+/// (resolveStoreAccess(), Milestone 11 §1.3) and is unaffected by the
+/// windowing change; it becomes an EXISTS-shaped query instead of a unique
+/// lookup, same answer. Never trust a client-supplied count; this table is
+/// the only source of truth. See recordAnalysisUsage() for the
+/// advisory-lock pattern that keeps concurrent requests from a user with one
+/// credit left from consuming two.
 model AnalysisUsage {
   id        String   @id @default(cuid())
   userId    String
@@ -653,8 +810,37 @@ model AnalysisUsage {
   store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
 
-  @@unique([userId, storeId])
-  @@index([userId])
+  /// The windowed quota query's covering index (countAnalysesInWindow()).
+  @@index([userId, createdAt])
+  /// Non-unique now (the lifetime uniqueness constraint is gone) — still
+  /// needed so hasAnalyzedStore()'s EXISTS query and the D2 same-store/
+  /// same-window dedup check inside recordAnalysisUsage() stay index-backed.
+  @@index([userId, storeId])
+}
+
+/// Milestone 12 §1.3: the DB-backed ledger behind the anonymous 3-per-24h
+/// quota (POST /api/analyze without a session) — deliberately NOT the
+/// in-memory rate limiter (rate-limit.ts), which can't hold a 24-hour window
+/// across a process restart. `ipKey` is getClientIp()'s output — the FIXED
+/// version (Milestone 11 fix 1.1); keying this on the pre-fix extraction
+/// would have made the quota free to bypass with a spoofed
+/// x-forwarded-for prefix. Also backs the global hourly circuit breaker
+/// (ANONYMOUS_CRAWL_HOURLY_CEILING) via a count with no ipKey filter.
+model AnonymousAnalysis {
+  id    String @id @default(cuid())
+  ipKey String
+  /// Canonicalized domain the probe targeted — informational only (abuse
+  /// investigation, admin visibility). Deliberately not a Store foreign
+  /// key: an anonymous probe never creates a Store row (Milestone 11 fix
+  /// 1.5, preserved here — see analysis/anonymous-probe.ts), and most
+  /// probed domains never get one at all.
+  domain String
+
+  createdAt DateTime @default(now())
+
+  @@index([ipKey, createdAt])
+  /// The circuit breaker's own query shape — global count in the last hour, no ipKey filter.
+  @@index([createdAt])
 }
 
 // ---------------------------------------------------------------------------
@@ -916,4 +1102,103 @@ model Subscription {
 
   @@index([userId])
   @@index([status, expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// Super admin analytics — Milestone 12 Phase 3
+//
+// Every number the admin analytics dashboard renders is a full aggregate
+// scan over Event/Crawl/AnalysisUsage/etc. (see src/lib/admin/analytics/) —
+// deliberately never run synchronously on a page load. computeAndStoreSnapshots()
+// (analytics/snapshot.ts) runs from the worker tick, self-gated to hourly,
+// and writes one row per (metricKey, dimension, windowStart, windowEnd) here;
+// Server Components under /admin/analytics read ONLY this table.
+// ---------------------------------------------------------------------------
+
+/// `dimension` is a plain, always-non-null String (default ""), not
+/// String? — a nullable column would let Postgres treat two rows with the
+/// same (metricKey, NULL, windowStart, windowEnd) as non-duplicates under a
+/// unique index (NULL <> NULL), silently defeating the upsert-in-place
+/// design below. "" is the explicit spelling of "this metric has no
+/// sub-breakdown" (e.g. total signups in the window), matching a real
+/// dimension value like a PlanTier or a cohort month ("2026-07") for
+/// metrics that have one.
+///
+/// windowStart/windowEnd both identify a POINT-IN-TIME metric (equal
+/// values — e.g. "MRR right now") and a WINDOWED one (e.g. "new MRR in the
+/// last 30 days", or one calendar day/month bucket for a trend chart) with
+/// the same two columns, so every metric group shares one storage shape.
+/// The @@unique below is deliberately also the upsert key: recomputing a
+/// metric whose window is pinned to a calendar boundary (a cohort month, a
+/// trend chart's day) overwrites `value`/`computedAt` in place for free. A
+/// ROLLING window (the standard 1d/7d/30d/90d dashboard tiles) instead
+/// advances its windowEnd every run, so upserting alone would grow one new
+/// row per metric per hourly tick forever — analytics/snapshot.ts's
+/// pruneStaleRolledUpRows() deletes the previous run's now-stale row for
+/// those, keeping this table's rolling-window rows at O(metrics) rather
+/// than O(metrics × ticks).
+model MetricSnapshot {
+  id          String   @id @default(cuid())
+  metricKey   String
+  dimension   String   @default("")
+  windowStart DateTime
+  windowEnd   DateTime
+  value       Float
+  computedAt  DateTime @default(now())
+
+  @@unique([metricKey, dimension, windowStart, windowEnd])
+  /// The dashboard's own read shape: "latest value(s) for this metric,
+  /// most recent window first" — see analytics/read.ts.
+  @@index([metricKey, dimension, windowEnd(sort: Desc)])
+}
+
+// ---------------------------------------------------------------------------
+// Marketing conversion events — Milestone 12 §4.2 Step 2
+//
+// "Prefer server-side conversion APIs where they exist... Server-side
+// events go out from the worker, not the request path." This is that
+// queue: a signup route write (fast, local, in the request path) and a
+// separate worker read+dispatch (the actual outbound vendor call, off the
+// request path entirely) — never a synchronous call to a vendor's API from
+// inside an HTTP handler.
+// ---------------------------------------------------------------------------
+
+enum MarketingConversionEventType {
+  SIGNUP
+}
+
+/// PENDING -> DISPATCHED (success) or FAILED (real vendor error, retriable)
+/// or SKIPPED_NO_CREDENTIAL (no vendor secret configured yet — §4.3 hasn't
+/// shipped the credential vault this milestone; a documented, expected
+/// steady state today, not a failure to alert on). Never deleted — even a
+/// SKIPPED/FAILED row is a real record that a conversion was DUE and
+/// couldn't be reported, useful once §4.3 lands to know what to backfill.
+enum MarketingConversionDispatchStatus {
+  PENDING
+  DISPATCHED
+  SKIPPED_NO_CREDENTIAL
+  FAILED
+}
+
+/// One row per (event, vendor) — a signup with two vendors configured
+/// writes two rows, dispatched and retried independently. Deliberately
+/// stores NO PII beyond `userId` — the same minimization discipline this
+/// milestone's own audit-metadata addendum established (store the id,
+/// look up whatever's needed at the point of actual use, never a frozen
+/// copy). `vendor` is a plain String, not an enum, matching
+/// AdObservation.source/AdminAuditLog.action's own convention — adding a
+/// second vendor should never need a migration.
+model MarketingConversionEvent {
+  id             String                            @id @default(cuid())
+  eventType      MarketingConversionEventType
+  vendor         String
+  userId         String
+  occurredAt     DateTime                          @default(now())
+  dispatchStatus MarketingConversionDispatchStatus @default(PENDING)
+  dispatchedAt   DateTime?
+  dispatchError  String?
+
+  /// The worker's own claim query shape — "give me what's still due."
+  @@index([dispatchStatus, occurredAt])
+  @@index([userId])
 }

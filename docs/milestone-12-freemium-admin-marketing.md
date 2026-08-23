@@ -11,27 +11,21 @@ out explicitly below.
 
 ---
 
-## Blocking decisions — get answers before writing code
+## Blocking decisions — answered by the repository owner
 
-Do not start Phase 1 until the repository owner has answered these. Record the answers in
-the doc itself.
-
-- **D1 — Free trial anchor.** Does the 30-day free monitoring window run from *account
-  creation* or from *when the user adds their first watch*? Recommended: account creation
-  (`User.freeTrialEndsAt = createdAt + 30d`). Per-watch anchoring lets a user sign up, wait
-  60 days, then start a fresh 30-day window, and gives no fixed date to convert against.
-- **D2 — Repeat analysis.** Does re-analyzing a store the user already analyzed within the
-  last 24h consume a second daily credit? Recommended: no. Charge once per
-  `(userId, storeId)` per 24h window.
-- **D3 — Anonymous analysis.** Milestone 11 fix 1.4 made `POST /api/analyze` require
-  sign-in. This milestone reinstates anonymous access at 3/24h. Confirm, and confirm whether
-  Cloudflare Turnstile is acceptable on the anonymous form (strongly recommended — an
-  IP-keyed quota is one VPN hop from unlimited).
-- **D4 — Prices.** `BASIC` monthly price (currently a `$19` placeholder), and whether
-  `ANNUAL` is real in V1 or dropped. `BUSINESS` is confirmed at `$49/mo`.
-- **D5 — Business cap behaviour.** At the 100/day cap, does the request hard-fail with an
-  error, or soft-throttle (queue/slow)? Recommended: hard-fail with a message that does not
-  contradict the marketing copy — see the "unlimited" note in Phase 1.
+- **D1 — Free trial anchor.** Account creation. `User.freeTrialEndsAt = createdAt + 30d`.
+- **D2 — Repeat analysis.** No — a repeat analysis of the same store within the 24h window
+  does not consume a second credit. Charge once per `(userId, storeId)` per 24h window.
+- **D3 — Anonymous analysis.** Confirmed, with an amendment: anonymous users get a
+  **shallow probe only, never a report.** See the amended §1.3 below — a single
+  `/products.json?page=1` fetch, no pagination, no review sampling, no marketing enrichment,
+  no `Store` row. Returns product count, price range, and Shopify confirmation only.
+  Turnstile, the 3/24h per-IP quota, and the hourly circuit breaker all still apply.
+- **D4 — Prices.** Deferred this phase. Leave the `$19` `BASIC` placeholder and the existing
+  `ANNUAL` handling untouched. `BUSINESS` is confirmed at `$49/mo` (already reflected in the
+  matrix below).
+- **D5 — Business cap behaviour.** Hard-fail at the `BUSINESS` cap with a `LIMIT_REACHED`
+  response (§1.5's shape) — no soft-throttle/queueing.
 
 ---
 

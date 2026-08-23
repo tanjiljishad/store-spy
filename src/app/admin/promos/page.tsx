@@ -1,9 +1,27 @@
+import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
 import { listPromos } from "@/lib/admin/promos-service";
+import { requirePermission } from "@/lib/admin/guard";
+import { ForbiddenError, UnauthorizedError } from "@/lib/auth/session";
 import { CreatePromoForm } from "@/components/admin/CreatePromoForm";
 
-/** Server Component — the list itself is fetched here, server-side, via the same listPromos() the API route uses. */
+/**
+ * Server Component — the list itself is fetched here, server-side, via the
+ * same listPromos() the API route uses. Security review fix 1: gated on
+ * promo:read specifically (BILLING_ADMIN/SUPER_ADMIN only) — AdminLayout's
+ * own gate only proves "some admin permission," not this one, so every
+ * non-USER role (e.g. ANALYST) previously read every promo code, including
+ * 100%-off ones, with no check above it. Same pattern as
+ * admin/analytics/page.tsx.
+ */
 export default async function AdminPromosPage() {
+  try {
+    await requirePermission("promo:read");
+  } catch (e) {
+    if (e instanceof UnauthorizedError || e instanceof ForbiddenError) notFound();
+    throw e;
+  }
+
   const page = await listPromos(prisma);
 
   return (

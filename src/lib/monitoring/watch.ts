@@ -21,7 +21,8 @@ import type { PlanTier } from "../entitlements/plan-limits";
 export type StartMonitoringResult =
   | { outcome: "started"; expiresAt: Date | null }
   | { outcome: "already_active"; expiresAt: Date | null }
-  | { outcome: "limit_reached"; code: "MONITORING_LIMIT_REACHED"; capability: "MAX_ACTIVE_MONITORED_STORES" };
+  | { outcome: "limit_reached"; current: number; max: number }
+  | { outcome: "trial_expired" };
 
 export async function startMonitoring(
   prisma: PrismaClient,
@@ -41,19 +42,44 @@ export async function startMonitoring(
       return { outcome: "already_active" as const, expiresAt: existing.monitoringExpiresAt };
     }
 
-    const activeCount = await tx.watchlist.count({ where: { userId, monitoringStatus: "ACTIVE" } });
-    if (!isUnderLimit(activeCount, maxActiveMonitoredStores(plan))) {
-      return {
-        outcome: "limit_reached" as const,
-        code: "MONITORING_LIMIT_REACHED" as const,
-        capability: "MAX_ACTIVE_MONITORED_STORES" as const,
-      };
+    // Milestone 12 §1.4: a FREE user whose 30-day trial has already passed
+    // must be blocked here, before the count check — without this, a user
+    // whose only watch already expired (activeCount back to 0, comfortably
+    // under the limit of 1) could start a brand-new watch that computes
+    // min(freeTrialEndsAt, watchExpiry) below to an ALREADY-PAST date,
+    // creating a watch that's immediately eligible for the very next
+    // expiry sweep instead of genuinely rejecting the request.
+    let freeTrialEndsAt: Date | null = null;
+    if (plan === "FREE") {
+      const user = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { freeTrialEndsAt: true } });
+      freeTrialEndsAt = user.freeTrialEndsAt;
+      if (freeTrialEndsAt !== null && freeTrialEndsAt <= now) {
+        return { outcome: "trial_expired" as const };
+      }
     }
 
-    // Monitoring scale is the commercial boundary. No current plan has a
-    // time-limited entitlement, so new watches never expire.
+    const activeCount = await tx.watchlist.count({ where: { userId, monitoringStatus: "ACTIVE" } });
+    const limit = maxActiveMonitoredStores(plan);
+    if (!isUnderLimit(activeCount, limit)) {
+      // isUnderLimit(count, null) is always true, so reaching this branch
+      // guarantees limit !== null.
+      return { outcome: "limit_reached" as const, current: activeCount, max: limit as number };
+    }
+
+    // Milestone 12 §1.4, per D1: a FREE watch's expiry is the EARLIER of
+    // the plan's own duration-based expiry (today, null/continuous for
+    // every plan) and the user's free-trial ceiling — "the cleanest
+    // implementation sets each FREE watch's monitoringExpiresAt to
+    // min(freeTrialEndsAt, watchExpiry) at creation time and changes
+    // nothing in the sweep" (the milestone doc's own words). Paid plans
+    // never carry a trial ceiling at all.
     const durationDays = monitoringDurationDays(plan);
-    const expiresAt = durationDays === null ? null : new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+    const watchExpiry = durationDays === null ? null : new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+    let expiresAt = watchExpiry;
+    if (plan === "FREE" && freeTrialEndsAt !== null) {
+      expiresAt = watchExpiry === null || freeTrialEndsAt < watchExpiry ? freeTrialEndsAt : watchExpiry;
+    }
+
     await tx.watchlist.upsert({
       where: { userId_storeId: { userId, storeId } },
       create: { userId, storeId, monitoringStartedAt: now, monitoringExpiresAt: expiresAt, monitoringStatus: "ACTIVE" },

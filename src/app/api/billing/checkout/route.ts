@@ -9,6 +9,17 @@ import type { BillingPeriod } from "@/lib/billing/pricing";
 export const runtime = "nodejs";
 
 const RATE_LIMIT = { limit: 20, windowMs: 60 * 60_000 };
+// Security review fix 4: a code-bearing checkout is the SAME promo
+// brute-force surface as /api/billing/promo/validate — both return a
+// distinguishable "invalid code" error (see the invalid_promo case below) —
+// so it needs that route's tighter 10/hour budget, not this route's looser
+// 20/hour plain-checkout one. Keyed separately from RATE_LIMIT above (its
+// own bucket, `billing:checkout-promo:user:*`, distinct from both
+// `billing:checkout:user:*` and /promo/validate's own `billing:promo-validate:user:*`)
+// so a codeless checkout is never throttled by a code-guessing run against
+// this same route, and vice versa — each per-user key only ever counts the
+// requests that actually belong to it.
+const PROMO_RATE_LIMIT = { limit: 10, windowMs: 60 * 60_000 };
 const VALID_PLANS: PlanTier[] = ["BASIC", "BUSINESS"];
 const VALID_PERIODS: BillingPeriod[] = ["MONTHLY", "ANNUAL"];
 
@@ -47,6 +58,16 @@ export async function POST(req: NextRequest) {
   }
   if (!period || !VALID_PERIODS.includes(period as BillingPeriod)) {
     return Response.json({ error: "Invalid period" }, { status: 400 });
+  }
+
+  if (code) {
+    const promoRate = checkRateLimit(`billing:checkout-promo:user:${actor.id}`, PROMO_RATE_LIMIT);
+    if (!promoRate.allowed) {
+      return Response.json(
+        { error: "Too many attempts. Try again later." },
+        { status: 429, headers: { "retry-after": String(Math.ceil(promoRate.retryAfterMs / 1000)) } },
+      );
+    }
   }
 
   const result = await processCheckout(prisma, { userId: actor.id, plan: plan as PlanTier, period: period as BillingPeriod, code });

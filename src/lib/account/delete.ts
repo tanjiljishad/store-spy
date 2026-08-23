@@ -1,0 +1,88 @@
+import type { PrismaClient } from "@prisma/client";
+
+/**
+ * Milestone 12 §4.1: GDPR Art. 17 ("right to erasure"), self-service.
+ *
+ * "Deletion cascades across watches, usage rows, subscriptions, and
+ * checkouts, but audit rows SURVIVE with the user id replaced by a
+ * tombstone — an audit log that can be erased by its subject is not an
+ * audit log."
+ *
+ * Watchlist/AnalysisUsage/Account/Session/AdminPermissionGrant all cascade
+ * automatically on `tx.user.delete()` via their own `onDelete: Cascade`
+ * relations (see schema.prisma) — nothing to do for those here. Subscription
+ * and Checkout are deliberately NOT FK-related to User anywhere in this
+ * schema (so a user's billing history can outlive an unrelated admin
+ * action elsewhere — same reasoning family as
+ * AdminPermissionGrant.grantedByUserId's own doc comment), which means a
+ * plain `user.delete()` would silently leave them dangling instead of
+ * removing them. The doc's own scope names exactly these two, so both are
+ * deleted explicitly, in the same transaction as the User row itself.
+ *
+ * PromoRedemption and PromoCode.assignedToUserId/createdByUserId are
+ * likewise un-FK'd to User but are NOT in the doc's named scope — left
+ * untouched, same "survives, not erasure-scoped" status as AdminAuditLog,
+ * consistent with how immutable financial/promo records are treated
+ * elsewhere in this codebase (PromoCode's own doc comment: "a redemption
+ * row's recorded amounts must always be reconcilable").
+ */
+
+const TOMBSTONE_EMAIL = "[deleted user]";
+
+function tombstoneUserId(originalUserId: string): string {
+  return `deleted:${originalUserId}`;
+}
+
+export type DeleteOwnAccountOutcome =
+  | { outcome: "deleted"; auditRowsTombstoned: number }
+  | { outcome: "user_not_found" }
+  | { outcome: "last_super_admin" };
+
+export async function deleteOwnAccount(prisma: PrismaClient, userId: string): Promise<DeleteOwnAccountOutcome> {
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: userId }, select: { id: true, role: true } });
+    if (!user) return { outcome: "user_not_found" };
+
+    if (user.role === "SUPER_ADMIN") {
+      // Same lock key as updateUserRole() (users-service.ts) — a role
+      // demotion and a self-deletion racing each other must never both
+      // read "count = 2" and both proceed, leaving zero SUPER_ADMINs with
+      // no HTTP path to mint another (see scripts/grant-admin.ts's own
+      // doc comment: it's the ONLY way). Not a GDPR carve-out — a
+      // SUPER_ADMIN retains the same Art. 17 right as anyone else, just
+      // not the right to strand the whole admin system while exercising
+      // it; they can still delete their account after demoting themselves
+      // or promoting a successor.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('admin:super-admin-count')::bigint)`;
+      const superAdminCount = await tx.user.count({ where: { role: "SUPER_ADMIN" } });
+      if (superAdminCount <= 1) {
+        return { outcome: "last_super_admin" };
+      }
+    }
+
+    await tx.checkout.deleteMany({ where: { userId } });
+    await tx.subscription.deleteMany({ where: { userId } });
+
+    // Distinct affected rows counted BEFORE either UPDATE — a row can
+    // legitimately match both conditions (e.g. checkout.completed_free's
+    // own audit write sets actorId AND targetId to the same acting user),
+    // and summing two separate updateMany() counts would double-count it.
+    const affected = await tx.adminAuditLog.findMany({
+      where: { OR: [{ actorId: userId }, { targetType: "User", targetId: userId }] },
+      select: { id: true },
+    });
+
+    await tx.adminAuditLog.updateMany({
+      where: { actorId: userId },
+      data: { actorId: tombstoneUserId(userId), actorEmail: TOMBSTONE_EMAIL },
+    });
+    await tx.adminAuditLog.updateMany({
+      where: { targetType: "User", targetId: userId },
+      data: { targetId: tombstoneUserId(userId) },
+    });
+
+    await tx.user.delete({ where: { id: userId } });
+
+    return { outcome: "deleted", auditRowsTombstoned: affected.length };
+  });
+}

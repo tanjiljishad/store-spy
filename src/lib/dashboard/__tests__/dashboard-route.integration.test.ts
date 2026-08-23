@@ -54,8 +54,8 @@ describe("GET /api/dashboard", () => {
     const res = await dashboardGet(req());
     expect(res.status).toBe(200);
     const body = await res.json();
-    // Pre-existing, unrelated to Milestone 11 — see summary.integration.test.ts.
-    expect(body).toMatchObject({ plan: "FREE", analyses: { used: 0, limit: null, stores: [] } });
+    // Milestone 12 §1.1/§1.2: FREE's real windowed limit is 10/24h, not unlimited.
+    expect(body).toMatchObject({ plan: "FREE", analyses: { used: 0, limit: 10, stores: [] } });
   });
 
   it("never exposes internal database ids — only derived, presentation-ready fields", async () => {

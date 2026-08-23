@@ -87,11 +87,11 @@ describe("POST /api/store/[domain]/watch", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("ACTIVE");
-    // Pre-existing, unrelated to Milestone 11: the (uncommitted) freemium
-    // redesign already set FREE's monitoringDurationDays to null/no-expiry
-    // in plan-limits.ts (watch.ts reads it directly) — this assertion was
-    // stale against that, expecting the old ~30-day expiry model.
-    expect(body.expiresAt).toBeNull();
+    // Milestone 12 §1.4: a FREE watch now carries the account's trial
+    // ceiling (min(freeTrialEndsAt, watchExpiry), watchExpiry itself still
+    // null) rather than never expiring at all.
+    const freshUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(body.expiresAt).toBe(freshUser.freeTrialEndsAt!.toISOString());
   });
 
   it("returns the structured entitlement-denied shape, not a raw 500, once the free slot is used", async () => {
@@ -105,7 +105,7 @@ describe("POST /api/store/[domain]/watch", () => {
 
     expect(res.status).toBe(403);
     const body = await res.json();
-    expect(body).toEqual({ code: "MONITORING_LIMIT_REACHED", capability: "MAX_ACTIVE_MONITORED_STORES" });
+    expect(body).toEqual({ code: "LIMIT_REACHED", limit: "MONITORED_STORES", current: 1, max: 1, upgradeTo: "BASIC" });
   });
 
   it("ignores any client-supplied body — expiry, status, and duration are always computed server-side", async () => {
@@ -125,12 +125,12 @@ describe("POST /api/store/[domain]/watch", () => {
     expect(res.status).toBe(200);
 
     const watch = await prisma.watchlist.findUniqueOrThrow({ where: { userId_storeId: { userId: user.id, storeId: store.id } } });
-    // Pre-existing, unrelated to Milestone 11 — see the test above: FREE's
-    // monitoringDurationDays is null (no expiry) under the already-uncommitted
-    // freemium redesign, not the old ~30-day duration. The real point this
-    // test is making — the attacker-supplied 2099 date is ignored — still
-    // holds: it's server-computed null, never the spoofed value.
-    expect(watch.monitoringExpiresAt).toBeNull();
+    // The real point this test makes still holds: the attacker-supplied
+    // 2099 date is ignored — it's server-computed (the trial ceiling,
+    // Milestone 12 §1.4), never the spoofed value.
+    const freshUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(watch.monitoringExpiresAt!.getTime()).toBe(freshUser.freeTrialEndsAt!.getTime());
+    expect(watch.monitoringExpiresAt!.getFullYear()).not.toBe(2099);
     expect(watch.userId).toBe(user.id); // never the spoofed "someone-elses-id"
   });
 

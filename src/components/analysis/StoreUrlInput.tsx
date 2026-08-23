@@ -1,10 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import { TurnstileWidget } from "./TurnstileWidget";
 
 export interface StoreUrlInputProps {
   onSubmit: (url: string) => void;
   disabled?: boolean;
+  /** Milestone 12 §1.3: only an anonymous (signed-out) caller needs Turnstile — a signed-in request skips it entirely. */
+  requireTurnstile?: boolean;
+  turnstileToken?: string | null;
+  onTurnstileToken?: (token: string | null) => void;
 }
 
 const DEMO_URLS = ["allbirds.com", "gymshark.com", "kyliecosmetics.com"];
@@ -31,7 +36,13 @@ function validate(raw: string): { domain: string } | { error: string } {
   return { domain: candidate };
 }
 
-export function StoreUrlInput({ onSubmit, disabled }: StoreUrlInputProps) {
+export function StoreUrlInput({
+  onSubmit,
+  disabled,
+  requireTurnstile = false,
+  turnstileToken = null,
+  onTurnstileToken,
+}: StoreUrlInputProps) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -39,6 +50,10 @@ export function StoreUrlInput({ onSubmit, disabled }: StoreUrlInputProps) {
     const result = validate(value);
     if ("error" in result) {
       setError(result.error);
+      return;
+    }
+    if (requireTurnstile && !turnstileToken) {
+      setError("Please complete the verification below.");
       return;
     }
     setError(null);
@@ -82,7 +97,10 @@ export function StoreUrlInput({ onSubmit, disabled }: StoreUrlInputProps) {
           {error}
         </p>
       )}
-      <p className="mt-3.5 font-mono text-xs text-muted-dim">First analysis is free · no account required</p>
+      {requireTurnstile && onTurnstileToken && <TurnstileWidget onToken={onTurnstileToken} />}
+      <p className="mt-3.5 font-mono text-xs text-muted-dim">
+        {requireTurnstile ? "3 free analyses per day · no account required" : "First analysis is free · no account required"}
+      </p>
 
       <div className="mt-5 flex flex-wrap justify-center gap-2">
         <span className="self-center font-mono text-[11px] tracking-wider text-muted-dim">TRY:</span>

@@ -1,0 +1,52 @@
+import { PrismaClient } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { grantMarketingConsent, revokeMarketingConsent, SIGNUP_FORM_CONSENT_SOURCE, OAUTH_WELCOME_CONSENT_SOURCE } from "../consent";
+
+const url = process.env.DATABASE_URL;
+if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
+const prisma = new PrismaClient();
+afterAll(async () => prisma.$disconnect());
+beforeEach(async () => prisma.$executeRawUnsafe(`TRUNCATE "User" RESTART IDENTITY CASCADE`));
+
+describe("grantMarketingConsent / revokeMarketingConsent", () => {
+  it("grant sets consent true with a real timestamp and the given source", async () => {
+    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    const now = new Date("2026-08-22T00:00:00Z");
+
+    await grantMarketingConsent(prisma, user.id, SIGNUP_FORM_CONSENT_SOURCE, now);
+
+    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(updated.marketingConsent).toBe(true);
+    expect(updated.marketingConsentAt).toEqual(now);
+    expect(updated.marketingConsentSource).toBe("signup_form");
+  });
+
+  it("records the OAuth-interstitial source distinctly from the signup-form source", async () => {
+    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    await grantMarketingConsent(prisma, user.id, OAUTH_WELCOME_CONSENT_SOURCE);
+    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(updated.marketingConsentSource).toBe("oauth_welcome_interstitial");
+  });
+
+  it("revoke flips consent to false but preserves the original marketingConsentAt/Source as history", async () => {
+    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    const grantedAt = new Date("2026-08-01T00:00:00Z");
+    await grantMarketingConsent(prisma, user.id, SIGNUP_FORM_CONSENT_SOURCE, grantedAt);
+
+    await revokeMarketingConsent(prisma, user.id);
+
+    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(updated.marketingConsent).toBe(false);
+    expect(updated.marketingConsentAt).toEqual(grantedAt); // NOT cleared — the historical grant record survives
+    expect(updated.marketingConsentSource).toBe("signup_form");
+  });
+
+  it("revoke is idempotent — revoking a user who never consented is a harmless no-op", async () => {
+    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    await revokeMarketingConsent(prisma, user.id);
+    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(updated.marketingConsent).toBe(false);
+    expect(updated.marketingConsentAt).toBeNull();
+  });
+});

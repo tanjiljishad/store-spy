@@ -22,8 +22,8 @@ export function hasCapability(plan: PlanTier, capability: BooleanCapability): bo
 }
 
 /** null means unlimited — see plan-limits.ts's Limit type and isUnderLimit(). */
-export function maxUniqueAnalyses(plan: PlanTier): Limit {
-  return getPlanLimits(plan).maxUniqueAnalyses;
+export function maxAnalysesPer24h(plan: PlanTier): Limit {
+  return getPlanLimits(plan).maxAnalysesPer24h;
 }
 
 export function maxActiveMonitoredStores(plan: PlanTier): Limit {
@@ -33,4 +33,9 @@ export function maxActiveMonitoredStores(plan: PlanTier): Limit {
 /** null means continuous monitoring — no fixed expiry. */
 export function monitoringDurationDays(plan: PlanTier): Limit {
   return getPlanLimits(plan).monitoringDurationDays;
+}
+
+/** null means no free-trial ceiling (every paid plan). See watch.ts's startMonitoring(). */
+export function freeTrialDays(plan: PlanTier): Limit {
+  return getPlanLimits(plan).freeTrialDays;
 }

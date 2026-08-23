@@ -22,6 +22,12 @@ export function AuthForm({ mode, hasGoogle, hasFacebook, destination }: AuthForm
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // Milestone 12 §4.1: two SEPARATE checkboxes. tosAccepted is required to
+  // submit at all (see the disabled state below); marketingConsent starts
+  // unticked and stays fully optional — the two must never be combined
+  // into one control, or read from one another, or this whole point is lost.
+  const [tosAccepted, setTosAccepted] = useState(false);
+  const [marketingConsent, setMarketingConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -35,7 +41,7 @@ export function AuthForm({ mode, hasGoogle, hasFacebook, destination }: AuthForm
         const res = await fetch("/api/auth/signup", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ email, password }),
+          body: JSON.stringify({ email, password, tosAccepted, marketingConsent }),
         });
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -119,6 +125,42 @@ export function AuthForm({ mode, hasGoogle, hasFacebook, destination }: AuthForm
           />
         </label>
 
+        {mode === "signup" && (
+          <div className="flex flex-col gap-2.5">
+            {/* Milestone 12 §4.1: required — the submit button stays disabled until this is checked. */}
+            <label className="flex items-start gap-2.5 font-mono text-[12px] text-muted-dim">
+              <input
+                type="checkbox"
+                required
+                checked={tosAccepted}
+                onChange={(e) => setTosAccepted(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-sig-price"
+              />
+              <span>
+                I agree to the{" "}
+                <a href="/terms" target="_blank" rel="noreferrer" className="text-sig-new hover:text-[#8AD8FF]">
+                  Terms of Service
+                </a>{" "}
+                and{" "}
+                <a href="/privacy" target="_blank" rel="noreferrer" className="text-sig-new hover:text-[#8AD8FF]">
+                  Privacy Policy
+                </a>
+                . (Required)
+              </span>
+            </label>
+            {/* Milestone 12 §4.1: a SEPARATE, unticked-by-default checkbox — deliberately not combined with the one above. Fully optional; signup succeeds either way. */}
+            <label className="flex items-start gap-2.5 font-mono text-[12px] text-muted-dim">
+              <input
+                type="checkbox"
+                checked={marketingConsent}
+                onChange={(e) => setMarketingConsent(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-sig-price"
+              />
+              <span>Send me occasional product updates and offers by email. (Optional — you can unsubscribe anytime)</span>
+            </label>
+          </div>
+        )}
+
         {error && (
           <p role="alert" className="rounded-md border border-sig-stock/35 px-3.5 py-2.5 font-mono text-[12.5px] text-sig-stock">
             {error}
@@ -127,7 +169,7 @@ export function AuthForm({ mode, hasGoogle, hasFacebook, destination }: AuthForm
 
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || (mode === "signup" && !tosAccepted)}
           className="mt-1.5 rounded-md bg-sig-price px-5 py-3 font-mono text-[13px] font-semibold text-[#1A1204] transition hover:-translate-y-px hover:bg-[#FFC44D] disabled:pointer-events-none disabled:opacity-60"
         >
           {loading ? "Please wait…" : mode === "signup" ? "Create free account" : "Sign in"}

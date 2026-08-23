@@ -21,10 +21,13 @@ import type { PlanTier } from "../entitlements/plan-limits";
 export type BillingPeriod = "MONTHLY" | "ANNUAL";
 
 /**
- * BASIC and BUSINESS are billed identically — see plan-limits.ts's own
- * comment: both are retained enum values mapping to the single "Paid"
- * offer the freemium redesign settled on (Milestone 10 Sub-phase C), not
- * two differently-priced tiers.
+ * Milestone 12 D4: BASIC and BUSINESS are no longer billed identically.
+ * BASIC's $19/mo stays the same unfinalized placeholder it always was
+ * (D4 explicitly deferred it this phase — leave it untouched). BUSINESS's
+ * $49/mo is a confirmed, real number (D4), matching plan-limits.ts's own
+ * un-collapsing of the two tiers' entitlements (20 vs. 50 monitored
+ * stores, 50 vs. 100 analyses/24h) — they stopped being the same offer
+ * with two enum spellings.
  *
  * ANNUAL is priced at 12x monthly with NO discount applied — the decision
  * report explicitly lists "Annual billing" under "What Not to Build" for
@@ -37,12 +40,24 @@ export type BillingPeriod = "MONTHLY" | "ANNUAL";
  */
 const MONTHLY_PRICE_CENTS: Record<PlanTier, number> = {
   FREE: 0,
-  BASIC: 1900, // $19.00 — placeholder, see the doc comment above
-  BUSINESS: 1900,
+  BASIC: 1900, // $19.00 — still an unfinalized placeholder, see the doc comment above
+  BUSINESS: 4900, // $49.00 — confirmed (Milestone 12 D4), not a placeholder
 };
 
 export function listPriceCents(plan: PlanTier, period: BillingPeriod): number {
   if (plan === "FREE") return 0;
   const monthly = MONTHLY_PRICE_CENTS[plan];
   return period === "ANNUAL" ? monthly * 12 : monthly;
+}
+
+/**
+ * Milestone 12 §3.1: the admin revenue metrics (MRR, ARPU, new/expansion/
+ * churned MRR — see admin/analytics/revenue.ts) need a plain monthly price
+ * per plan, not a period-adjusted total. Reuses listPriceCents() rather
+ * than re-reading MONTHLY_PRICE_CENTS directly, so this file stays the
+ * single source of truth for price even for a caller that only ever cares
+ * about the monthly figure.
+ */
+export function monthlyPriceCents(plan: PlanTier): number {
+  return listPriceCents(plan, "MONTHLY");
 }

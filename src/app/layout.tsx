@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans, Space_Grotesk } from "next/font/google";
 import { AuthProvider } from "@/components/auth/AuthProvider";
+import { CookieConsentBanner } from "@/components/marketing/CookieConsentBanner";
 import "./globals.css";
 
 const spaceGrotesk = Space_Grotesk({
@@ -38,6 +39,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     >
       <body className="antialiased">
         <AuthProvider>{children}</AuthProvider>
+        <CookieConsentBanner />
       </body>
     </html>
   );

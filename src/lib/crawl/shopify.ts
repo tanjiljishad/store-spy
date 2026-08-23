@@ -4,6 +4,7 @@ import type { NormalizedTech } from "./types";
 import { fingerprintTech } from "./fingerprint";
 import { checkUrlIsSafeToFetch, type DnsLookup } from "../security/ssrf-guard";
 import { createAutoPinnedFetch } from "../security/pinned-fetch";
+import { toCents } from "../money";
 
 /**
  * Fetches a Shopify storefront's public JSON endpoints and hands back a
@@ -273,6 +274,63 @@ export async function crawlShopifyStore(
       httpErrors,
       capturedAt: new Date(),
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shallow probe — Milestone 12 §1.3 (anonymous analysis, D3 amendment).
+//
+// Deliberately NOT crawlShopifyStore(): that function paginates the full
+// catalog, fetches bestseller ranks, collections, and the homepage (theme/
+// tech fingerprinting) — a real, multi-request crawl. An anonymous caller
+// gets exactly ONE outbound request: page 1 of /products.json, no retry, no
+// pagination, no extras. Reuses fetchProductsPage()/classifyFirstPageFailure
+// verbatim (the same parsing/error-classification crawlShopifyStore's own
+// page-1 probe uses) rather than a second implementation of "fetch and
+// classify one page" — the only thing this function adds on top is skipping
+// the outer retry-on-transient-failure loop crawlShopifyStore wraps around
+// it, which is what keeps this at exactly one fetch even on a transient
+// blip, not just on the happy path.
+// ---------------------------------------------------------------------------
+
+export type ShallowProbeResult =
+  | { status: "ok"; productCount: number; priceMinCents: number | null; priceMaxCents: number | null }
+  | Exclude<CrawlResult, { status: "ok" }>;
+
+export async function probeShopifyStorePage1(
+  domainInput: string,
+  opts: CrawlOptions = {},
+): Promise<ShallowProbeResult> {
+  const domain = canonicalizeDomain(domainInput);
+  const dnsLookup = opts.dnsLookup;
+  const fetchImpl = opts.fetchImpl ?? createAutoPinnedFetch(dnsLookup);
+  const userAgent = opts.userAgent ?? DEFAULT_USER_AGENT;
+  const pageSize = opts.pageSize ?? 250;
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const maxResponseBytes = opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  const baseUrl = `https://${domain}`;
+  const deps: FetchDeps = { fetchImpl, dnsLookup, userAgent, timeoutMs, maxResponseBytes };
+
+  const safety = await checkUrlIsSafeToFetch(baseUrl, dnsLookup);
+  if (!safety.ok) {
+    return { status: "invalid", reason: safety.reason ?? "URL rejected" };
+  }
+
+  const page1 = await fetchProductsPage(baseUrl, 1, pageSize, deps);
+  if (!page1.ok) {
+    return classifyFirstPageFailure(page1) as Exclude<CrawlResult, { status: "ok" }>;
+  }
+
+  const prices = page1.products
+    .flatMap((p) => p.variants ?? [])
+    .map((v) => toCents(v.price))
+    .filter((cents): cents is number => cents !== null);
+
+  return {
+    status: "ok",
+    productCount: page1.products.length,
+    priceMinCents: prices.length > 0 ? Math.min(...prices) : null,
+    priceMaxCents: prices.length > 0 ? Math.max(...prices) : null,
   };
 }
 

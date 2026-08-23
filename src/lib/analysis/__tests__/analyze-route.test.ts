@@ -30,8 +30,17 @@ const runAnalysisMock = vi.fn(async ({ onEvent }: { onEvent: (e: unknown) => voi
 vi.mock("@/lib/analysis/run-analysis", () => ({
   runAnalysis: (...args: Parameters<typeof runAnalysisMock>) => runAnalysisMock(...args),
 }));
-// Defaults to a signed-in user — POST /api/analyze requires one (this
-// milestone's doc, item 1.4). The anonymous case gets its own describe
+// Milestone 12 §1.3: the anonymous path no longer 401s — it calls this
+// instead. Mocked separately so tests can assert exactly which of the two
+// orchestrators a given request reaches, and with what arguments.
+const runAnonymousProbeMock = vi.fn(async ({ onEvent }: { onEvent: (e: unknown) => void }) => {
+  onEvent({ type: "status", status: "validating" });
+  onEvent({ type: "complete", report: { access: "anonymous_probe" } });
+});
+vi.mock("@/lib/analysis/anonymous-probe", () => ({
+  runAnonymousProbe: (...args: Parameters<typeof runAnonymousProbeMock>) => runAnonymousProbeMock(...args),
+}));
+// Defaults to a signed-in user. The anonymous case gets its own describe
 // block below, which overrides this per-test.
 const getCurrentUserMock = vi.fn<() => Promise<{ id: string; email: string; plan: "FREE" } | null>>(async () => ({
   id: "user-1",
@@ -49,6 +58,7 @@ const { _resetRateLimitState } = await import("../../security/rate-limit");
 beforeEach(() => {
   _resetRateLimitState();
   runAnalysisMock.mockClear();
+  runAnonymousProbeMock.mockClear();
   getCurrentUserMock.mockClear();
   getCurrentUserMock.mockResolvedValue({ id: "user-1", email: "user@example.com", plan: "FREE" });
   releaseSecondEvent = null;
@@ -58,11 +68,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function req(): NextRequest {
+function req(headers: Record<string, string> = {}, body: Record<string, unknown> = {}): NextRequest {
   return new NextRequest("http://localhost/api/analyze", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.77" },
-    body: JSON.stringify({ url: "https://example.com" }),
+    headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.77", ...headers },
+    body: JSON.stringify({ url: "https://example.com", ...body }),
   });
 }
 
@@ -115,20 +125,59 @@ describe("POST /api/analyze — SSE stream cancellation safety", () => {
   });
 });
 
-describe("POST /api/analyze — requires a signed-in caller", () => {
-  it("returns 401 for an anonymous caller and never invokes runAnalysis", async () => {
+describe("POST /api/analyze — authenticated vs. anonymous routing (Milestone 12 §1.3)", () => {
+  it("a signed-in caller reaches runAnalysis, never runAnonymousProbe", async () => {
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    releaseSecondEvent!();
+    expect(runAnalysisMock).toHaveBeenCalledTimes(1);
+    expect(runAnonymousProbeMock).not.toHaveBeenCalled();
+  });
+
+  it("an anonymous caller reaches runAnonymousProbe, never runAnalysis or a 401 — Milestone 11 fix 1.4 is narrowed, not reverted", async () => {
     getCurrentUserMock.mockResolvedValue(null);
 
     const res = await POST(req());
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    expect(runAnonymousProbeMock).toHaveBeenCalledTimes(1);
     expect(runAnalysisMock).not.toHaveBeenCalled();
   });
 
-  it("still succeeds for a signed-in caller", async () => {
-    const res = await POST(req());
-    expect(res.status).toBe(200);
-    releaseSecondEvent!();
+  it("passes the anonymous caller's turnstileToken from the request body through to runAnonymousProbe", async () => {
+    getCurrentUserMock.mockResolvedValue(null);
+
+    await POST(req({}, { turnstileToken: "a-real-token" }));
+
+    expect(runAnonymousProbeMock).toHaveBeenCalledWith(expect.objectContaining({ turnstileToken: "a-real-token" }));
+  });
+
+  it("passes null turnstileToken through when the anonymous caller supplied none — never invented, never defaulted to a truthy placeholder", async () => {
+    getCurrentUserMock.mockResolvedValue(null);
+
+    await POST(req());
+
+    expect(runAnonymousProbeMock).toHaveBeenCalledWith(expect.objectContaining({ turnstileToken: null }));
+  });
+
+  // Regression test against Milestone 11 fix 1.1, per this milestone's own
+  // explicit instruction: a spoofed x-forwarded-for prefix must not change
+  // which ipKey the anonymous quota gets keyed on. Mirrors the pattern
+  // already established in rate-limit.test.ts's own getClientIp regression
+  // test — here verified one layer up, at the actual route boundary that
+  // feeds runAnonymousProbe (and, downstream, recordAnonymousAnalysis).
+  it("a spoofed x-forwarded-for prefix does not change the ipKey passed to runAnonymousProbe (regression against fix 1.1)", async () => {
+    getCurrentUserMock.mockResolvedValue(null);
+
+    await POST(req({ "x-forwarded-for": "203.0.113.5" }));
+    const cleanIpKey = (runAnonymousProbeMock.mock.calls[0][0] as unknown as { ipKey: string }).ipKey;
+    runAnonymousProbeMock.mockClear();
+
+    await POST(req({ "x-forwarded-for": "1.2.3.4, 203.0.113.5" }));
+    const spoofedIpKey = (runAnonymousProbeMock.mock.calls[0][0] as unknown as { ipKey: string }).ipKey;
+
+    expect(spoofedIpKey).toBe(cleanIpKey);
+    expect(spoofedIpKey).not.toBe("1.2.3.4"); // the attacker-supplied prefix must never win
   });
 
   it("rate-limits by userId (10/hour), independent of the per-IP limiter", async () => {

@@ -3,6 +3,7 @@ import type { PlanTier } from "../entitlements/plan-limits";
 import { listPriceCents, type BillingPeriod } from "./pricing";
 import { evaluatePromo, redeemPromo } from "./promo";
 import { recordAdminAction } from "../admin/audit";
+import { clearTrialCeiling } from "./subscription-sweep";
 
 /**
  * There is no payment provider in this repo today — see
@@ -88,6 +89,10 @@ export async function processCheckout(prisma: PrismaClient, req: CheckoutRequest
       }
 
       await tx.user.update({ where: { id: req.userId }, data: { plan } });
+      // Milestone 12 §1.4: lifts any FREE-trial expiry ceiling from the
+      // user's existing watches now that they've actually paid (or redeemed
+      // a 100%-off promo) for a plan that carries none.
+      await clearTrialCeiling(tx, req.userId);
 
       // The Subscription's expiry follows the redeemed promo's own
       // durationDays (Milestone 11 Phase 3 §3.4 amendment) — null means

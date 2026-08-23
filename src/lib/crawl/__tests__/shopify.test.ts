@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { canonicalizeDomain, crawlShopifyStore, type CrawlOptions } from "../shopify";
+import { canonicalizeDomain, crawlShopifyStore, probeShopifyStorePage1, type CrawlOptions } from "../shopify";
 import type { ShopifyProduct } from "../normalize";
 import type { DnsLookup } from "../../security/ssrf-guard";
 
@@ -480,5 +480,73 @@ describe("crawlShopifyStore — SSRF protection", () => {
     // catch it, so this proves per-hop revalidation runs even with SAFE_DNS
     // configured for the *original* host.
     expect(result.status).toBe("error");
+  });
+});
+
+describe("probeShopifyStorePage1 — Milestone 12 §1.3's anonymous shallow probe", () => {
+  function probe(domain: string, opts: CrawlOptions = {}) {
+    return probeShopifyStorePage1(domain, { dnsLookup: SAFE_DNS, ...opts });
+  }
+
+  it("makes exactly one request, to products.json page 1 — never the extras crawlShopifyStore fetches", async () => {
+    const fetchImpl = routedFetch({
+      "/products.json": () => jsonResponse({ products: [product(1), product(2)] }),
+    });
+
+    const result = await probe("real-store.com", { fetchImpl });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [calledUrl] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
+    expect(String(calledUrl)).toContain("/products.json");
+    expect(String(calledUrl)).toContain("page=1");
+    expect(result).toMatchObject({ status: "ok", productCount: 2 });
+  });
+
+  it("computes the real price range from the page's own variants", async () => {
+    const fetchImpl = routedFetch({
+      "/products.json": () =>
+        jsonResponse({
+          products: [
+            product(1, { variants: [{ id: 10, title: "Default", sku: null, price: "19.99", compare_at_price: null, available: true, position: 1 }] }),
+            product(2, { variants: [{ id: 20, title: "Default", sku: null, price: "89.00", compare_at_price: null, available: true, position: 1 }] }),
+          ],
+        }),
+    });
+
+    const result = await probe("priced-store.com", { fetchImpl });
+    expect(result).toMatchObject({ status: "ok", priceMinCents: 1999, priceMaxCents: 8900 });
+  });
+
+  it("does not retry on a transient failure — the caller (anonymous-probe.ts) deliberately wants at most one fetch even on error", async () => {
+    const fetchImpl = routedFetch({
+      "/products.json": () => textResponse("server error", 500),
+    });
+
+    const result = await probe("flaky-store.com", { fetchImpl });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // no retry, unlike crawlShopifyStore's own page-1 probe
+    expect(result.status).toBe("error");
+  });
+
+  it("classifies a 404 as not_found, reusing the same classification crawlShopifyStore uses", async () => {
+    const fetchImpl = routedFetch({ "/products.json": () => textResponse("nope", 404) });
+    const result = await probe("not-shopify.com", { fetchImpl });
+    expect(result.status).toBe("not_found");
+  });
+
+  it("rejects an SSRF-unsafe target without making any request", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const result = await probeShopifyStorePage1("internal-target.com", {
+      fetchImpl,
+      dnsLookup: async () => [{ address: "169.254.169.254" }],
+    });
+    expect(result.status).toBe("invalid");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("a page with zero products is still status: ok, with productCount 0 and a null price range", async () => {
+    const fetchImpl = routedFetch({ "/products.json": () => jsonResponse({ products: [] }) });
+    const result = await probe("empty-store.com", { fetchImpl });
+    expect(result).toMatchObject({ status: "ok", productCount: 0, priceMinCents: null, priceMaxCents: null });
   });
 });
