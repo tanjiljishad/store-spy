@@ -1290,6 +1290,46 @@ model MarketingConversionEvent {
   @@schema("store_spy")
 }
 
+// ---------------------------------------------------------------------------
+// B2 step 1 — new homes for two store_spy.User columns that stay
+// product-specific (see docs/store-spy-control-plane-b2.md, Q2 and Q5).
+//
+// Both are keyed by control_plane.users.id. The foreign key to
+// control_plane.users is added in raw migration SQL, not here: Prisma's DSL
+// cannot put a second @relation on a column, and during B2 steps 1–3 these
+// ids also still satisfy the (soon-dropped) store_spy.User FK. `userId` is
+// therefore a plain String in the schema.
+// ---------------------------------------------------------------------------
+
+/// B2 TEMPORARY home for store_spy.User.role. Staff/customer separation is
+/// deferred to B2.5 (Q2) — at which point admin identities move to
+/// control_plane.staff / staff_roles and this table is retired. Only
+/// non-USER roles get a row; absence means USER. Keeps the "last SUPER_ADMIN"
+/// guard (account/delete.ts, users-service.ts) working as a COUNT over this
+/// table.
+model UserAdminRole {
+  userId String @id
+  role   Role
+
+  @@index([role])
+  @@map("UserAdminRole")
+  @@schema("store_spy")
+}
+
+/// store_spy.User's marketing-consent fields, unchanged in meaning. Kept
+/// per-product (Q5): Store Spy consent is not Find Suppliers consent. Same
+/// append-the-grant-timestamp discipline as before — unsubscribe flips
+/// `consent` to false but never clears `consentAt` / `consentSource`.
+model MarketingConsent {
+  userId        String    @id
+  consent       Boolean   @default(false)
+  consentAt     DateTime? @map("consent_at")
+  consentSource String?   @map("consent_source")
+
+  @@map("MarketingConsent")
+  @@schema("store_spy")
+}
+
 // ===========================================================================
 // CONTROL PLANE  (schema: control_plane)
 //
@@ -1364,6 +1404,19 @@ model CpUser {
   passwordHash String?       @map("password_hash")
   accountRole  CpAccountRole @default(OWNER) @map("account_role")
   createdAt    DateTime      @default(now()) @map("created_at")
+
+  // --- B2 step 1: identity columns migrated off store_spy.User. Nullable so
+  // the additive migration doesn't need a value for every column on every
+  // pre-existing row; the backfill populates them. `plan` and
+  // `freeTrialEndsAt` are deliberately absent — those become derived from
+  // control_plane.subscriptions / entitlements (see docs/store-spy-control-plane-b2.md).
+  emailVerifiedAt    DateTime? @map("email_verified_at")
+  sessionsValidAfter DateTime? @map("sessions_valid_after")
+  name               String?
+  image              String?
+  /// Terms of Service acceptance — with the company (Bellwether Intelligence),
+  /// not the product, so it lives here rather than in a store_spy table (Q5).
+  tosAcceptedAt      DateTime? @map("tos_accepted_at")
 
   @@index([accountId])
   @@map("users")

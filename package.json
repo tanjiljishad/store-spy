@@ -21,6 +21,7 @@
     "marketing-scheduler:tick": "tsx scripts/marketing-scheduler-tick.ts",
     "dev:set-plan": "tsx scripts/set-user-plan.ts",
     "verify:sql": "dotenv -e .env.test -- tsx scripts/verify-sql.ts",
+    "verify:b2-step1": "dotenv -e .env.test -- tsx scripts/verify-b2-step1-semantics.ts",
     "db:test:up": "docker compose -f docker-compose.test.yml up -d --wait",
     "db:test:down": "docker compose -f docker-compose.test.yml down -v",
     "db:test:migrate": "dotenv -e .env.test -- prisma migrate deploy"
