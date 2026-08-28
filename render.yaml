@@ -65,6 +65,11 @@ services:
         sync: false
       - key: SCHEDULER_SECRET
         sync: false
+      # Task B / B3 — authenticates GET /api/internal/entitlements
+      # (x-internal-secret header). Fails closed (503) if unset. See
+      # docs/environment-variables.md.
+      - key: CONTROL_PLANE_INTERNAL_SECRET
+        sync: false
       # Milestone 12 §1.3 — anonymous analysis's Turnstile challenge. See
       # docs/environment-variables.md: unset locally is fine (the widget
       # just doesn't render), but staging/production need real values from
