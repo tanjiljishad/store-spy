@@ -88,11 +88,12 @@ combination rather than leaving both open.
    (never in `render.yaml` — every variable there is `sync: false`
    deliberately). Use the checklist below.
 4. **Deploy.** Render's `preDeployCommand` on the web service
-   (`npx prisma migrate deploy`) applies all 8 existing migrations to the new,
+   (`npx prisma migrate deploy`) applies all existing migrations to the new,
    empty Neon database automatically on first deploy — no manual migration
    step needed. Confirm via Render's deploy log that this step reports
    `All migrations have been successfully applied.` before the web service
-   starts serving traffic.
+   starts serving traffic. **If the target database is NOT empty, read
+   "Database migrations" below first.**
 5. **Verify both services are alive**: the web service's health check
    (`healthCheckPath: /` in `render.yaml`) should go green; the worker
    service has no HTTP surface to check directly — confirm via its logs
@@ -106,6 +107,76 @@ combination rather than leaving both open.
    `docs/milestone-8-subphase-b-completion-report.md`'s local verification
    already did against the disposable Postgres instance.
 
+## Database migrations
+
+### `DATABASE_URL` form
+
+Since the control-plane split (migration `20260828120000_control_plane_and_schema_split`)
+the application's tables live in the `store_spy` schema and the shared
+identity/billing layer in `control_plane`; `_prisma_migrations` stays in
+`public`. `DATABASE_URL` **must** carry
+`?options=-c%20search_path%3Dstore_spy%2Cpublic` and **must not** carry
+`?schema=`. The web service refuses to start otherwise (`src/instrumentation.ts`),
+and the full rationale is in `docs/environment-variables.md`. Append the
+`options` parameter to Neon's pooled connection string before pasting it into
+Render.
+
+### First deploy to an empty database (the normal case)
+
+Nothing special. `prisma migrate deploy` runs the whole migration chain from
+scratch: migrations up to `20260824000000` create every table in `public`,
+then `20260828120000` moves them into `store_spy` and creates `control_plane`.
+Verified end to end against a fresh database. Confirm the deploy log ends with
+`All migrations have been successfully applied.`
+
+### Deploy to a database that already has migration history
+
+`prisma migrate deploy` applies only the pending migration(s) and does **not**
+re-run or re-check already-recorded ones, so deploying `20260828120000` onto a
+database that already has migrations 1–N recorded works the same as any other
+incremental migration — this was tested explicitly (22 prior migrations
+recorded in `public._prisma_migrations`, `20260828120000` deployed cleanly on
+top with both the old and the new `DATABASE_URL` form).
+
+### If `prisma migrate deploy` reports `P3005 — The database schema is not empty`
+
+This means Prisma found database objects it cannot account for from
+`_prisma_migrations` — e.g. a schema/table created outside Prisma, an
+interrupted migration, or (the way it was hit once during B1 development) a
+`prisma migrate diff --shadow-database-url` accidentally pointed at a real
+database, which partially applies migration 1 before failing and leaves stray
+types behind. It is a drift/baseline condition, not something the normal
+deploy path produces.
+
+Recovery, for the specific pending migration `<NAME>` (do this against the
+target database, with the same `DATABASE_URL`):
+
+```
+# 1. See what Prisma thinks is applied vs pending.
+npx prisma migrate status
+
+# 2. If <NAME> is pending and its objects are genuinely absent, apply its SQL
+#    directly, then record it as applied so `migrate deploy` moves on:
+npx prisma db execute --schema prisma/schema.prisma \
+  --file prisma/migrations/<NAME>/migration.sql
+npx prisma migrate resolve --applied <NAME>
+
+# 3. If <NAME>'s objects ARE already present (a previous run got partway),
+#    just record it as applied — do NOT re-run the SQL:
+npx prisma migrate resolve --applied <NAME>
+
+# 4. Confirm.
+npx prisma migrate deploy      # -> "No pending migrations to apply."
+npx prisma migrate status
+```
+
+Then remove whatever stray objects caused the drift (for the shadow-db case:
+`DROP SCHEMA store_spy CASCADE; DROP SCHEMA control_plane CASCADE;` on the
+polluted database *before* step 2, if they were only partially created).
+
+Never run `prisma migrate reset` against a database with real data — it drops
+and recreates everything.
+
 ## Environment variable checklist (staging values)
 
 See `docs/environment-variables.md` for the full reference (what each
@@ -113,7 +184,7 @@ variable protects, generation method). Staging-specific notes only:
 
 | Variable | Web service | Worker service | Staging value source |
 |---|---|---|---|
-| `DATABASE_URL` | Required | Required | Neon staging project's pooled connection string |
+| `DATABASE_URL` | Required | Required | Neon staging project's **pooled** connection string, with `?options=-c%20search_path%3Dstore_spy%2Cpublic` appended and no `?schema=` — see "Database migrations" above; the web service refuses to start if this is wrong |
 | `AUTH_SECRET` | Required | **Not needed** — verified in Sub-phase C that the worker's import chain never touches `next-auth`/`@auth/core`, and a real worker run with `AUTH_SECRET` unset completed a full cycle with no error | Freshly generated, staging-only |
 | `AUTH_TRUST_HOST` | **Required** — see the critical-fix note above; without it every Auth.js endpoint fails closed | Not needed (same reasoning as `AUTH_SECRET`) | `"true"` |
 | `SCHEDULER_SECRET` | Required if the HTTP scheduler routes will be manually triggered | Not needed (worker calls scheduler functions directly) | Freshly generated, staging-only, if used |

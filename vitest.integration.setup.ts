@@ -4,10 +4,11 @@
  *
  * Every integration test truncates shared tables in `beforeEach`. If
  * DATABASE_URL points anywhere other than the disposable docker-compose
- * Postgres, that TRUNCATE silently wipes a real database. Individual test
- * files carry a loose `/test/i` guard; this is the strict, central one:
- * the host port and database name must match the compose service exactly,
- * or the whole run aborts loudly here.
+ * Postgres — or has the wrong `search_path` so raw SQL resolves to the wrong
+ * schema — that TRUNCATE either wipes a real database or fails confusingly
+ * mid-suite. Individual test files carry a loose `/test/i` guard; this is the
+ * strict, central one: host port, database name, AND search_path must all be
+ * right, or the whole run aborts loudly here.
  *
  * If you change the published port or DB name, update every copy:
  *   - docker-compose.test.yml   (ports + healthcheck)
@@ -15,6 +16,7 @@
  *   - .env.test                 (each dev's local, gitignored)
  *   - the constants below
  */
+import { explicitSearchPathProblems } from "./src/lib/db/search-path";
 
 const EXPECTED_PORT = "5433";
 const EXPECTED_DB = "ecom_intel_test";
@@ -44,13 +46,16 @@ if (port !== EXPECTED_PORT) {
 if (dbName !== EXPECTED_DB) {
   problems.push(`database is "${dbName}", expected "${EXPECTED_DB}"`);
 }
+// search_path: raw SQL (every test's TRUNCATE) depends on `store_spy` being
+// first, then `public`. `?schema=` must not be present. See src/lib/db/search-path.ts.
+problems.push(...explicitSearchPathProblems(raw));
 
 if (problems.length > 0) {
   throw new Error(
-    "Integration preflight FAILED — refusing to run a suite that TRUNCATEs shared tables against the wrong database.\n" +
+    "Integration preflight FAILED — refusing to run a suite that TRUNCATEs shared tables against a mis-targeted database.\n" +
       problems.map((p) => `  - ${p}`).join("\n") +
       `\n  DATABASE_URL = ${raw}\n` +
-      "  Expected the disposable Postgres from docker-compose.test.yml. " +
-      "Check .env.test, or run `npm run db:test:up`.",
+      "  Expected the disposable Postgres from docker-compose.test.yml, reached via " +
+      "`?options=-c search_path=store_spy,public`. Check .env.test, or run `npm run db:test:up`.",
   );
 }
