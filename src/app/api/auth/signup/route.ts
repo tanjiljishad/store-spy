@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../../../../lib/db/prisma";
+import { provisionStoreSpyAccount, trialEndsFromNow } from "../../../../lib/control-plane/provision";
 import { hashPassword, isPasswordAcceptable } from "../../../../lib/auth/password";
 import { isPlausibleEmail, normalizeEmail } from "../../../../lib/auth/normalize-email";
 import { checkRateLimit, getClientIp } from "../../../../lib/security/rate-limit";
@@ -86,20 +88,44 @@ export async function POST(req: NextRequest) {
     // that already promised true; one insert makes the row correct from
     // the instant it exists, with no intermediate state to reason about.
     const now = new Date();
-    const user = await prisma.user.create({
-      data: {
+    const userId = randomUUID();
+    const trialEndsAt = trialEndsFromNow(now);
+    await prisma.$transaction(async (tx) => {
+      // B2 step 2·A: the account of record now lives in the control plane.
+      await provisionStoreSpyAccount(tx, {
+        userId,
         email,
         passwordHash,
         name,
-        // §4.1 addendum: tosAccepted was already validated true above —
-        // this is the ONE field DashboardLayout gates on (needsConsentInterstitial()),
-        // so a credentials signup must set it here or it would incorrectly
-        // hit the OAuth-only /welcome interstitial on its first dashboard visit.
+        emailVerifiedAt: null,
+        // §4.1 addendum: tosAccepted was already validated true above.
         tosAcceptedAt: now,
-        ...(marketingConsent ? { marketingConsent: true, marketingConsentAt: now, marketingConsentSource: SIGNUP_FORM_CONSENT_SOURCE } : {}),
-      },
-      select: { id: true, email: true },
+        trialEndsAt,
+      });
+      // TRANSITIONAL (B2 step 2·B): shadow store_spy.User row so the
+      // *_userId_fkey constraints (still -> store_spy.User until migration
+      // 20260828180000) and the still-live User.plan / User.marketingConsent
+      // readers keep working. 2·B deletes this write.
+      await tx.user.create({
+        data: {
+          id: userId,
+          email,
+          passwordHash,
+          name,
+          tosAcceptedAt: now,
+          freeTrialEndsAt: trialEndsAt,
+          plan: "FREE",
+          role: "USER",
+          ...(marketingConsent ? { marketingConsent: true, marketingConsentAt: now, marketingConsentSource: SIGNUP_FORM_CONSENT_SOURCE } : {}),
+        },
+      });
+      await tx.marketingConsent.create({
+        data: marketingConsent
+          ? { userId, consent: true, consentAt: now, consentSource: SIGNUP_FORM_CONSENT_SOURCE }
+          : { userId, consent: false },
+      });
     });
+    const user = { id: userId, email };
 
     // §4.2 Step 2: reads the SAME cookie the consent banner and every
     // pixel loader already use (cookie-consent.ts) — never a second

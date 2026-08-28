@@ -3,8 +3,8 @@ import type { Provider } from "next-auth/providers";
 import Credentials from "next-auth/providers/credentials";
 import Facebook from "next-auth/providers/facebook";
 import Google from "next-auth/providers/google";
-import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "../db/prisma";
+import { controlPlaneAdapter } from "./control-plane-adapter";
 import { authorizeCredentials } from "./authorize-credentials";
 import { getClientIp } from "../security/rate-limit";
 import { refreshJwtToken } from "./jwt-plan-refresh";
@@ -115,7 +115,10 @@ if (configuredProviders.facebook) {
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  adapter: PrismaAdapter(prisma),
+  // B2 step 2·A: wraps @auth/prisma-adapter and, on OAuth first sign-in, also
+  // provisions the control-plane account (+ a transitional shadow
+  // store_spy.User row). See control-plane-adapter.ts.
+  adapter: controlPlaneAdapter(prisma),
   session: { strategy: "jwt" },
   providers,
   pages: { signIn: "/login" },

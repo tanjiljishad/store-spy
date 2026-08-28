@@ -4,6 +4,7 @@ import { listPriceCents, type BillingPeriod } from "./pricing";
 import { evaluatePromo, redeemPromo } from "./promo";
 import { recordAdminAction } from "../admin/audit";
 import { clearTrialCeiling } from "./subscription-sweep";
+import { syncControlPlanePlan } from "../control-plane/provision";
 
 /**
  * There is no payment provider in this repo today — see
@@ -88,6 +89,9 @@ export async function processCheckout(prisma: PrismaClient, req: CheckoutRequest
         });
       }
 
+      // TRANSITIONAL (B2 step 2·B): the User.plan write. B2 step 2·A keeps it
+      // alongside the control-plane write below (syncControlPlanePlan); 2·B
+      // drops this line and lets the control plane be the sole source of plan.
       await tx.user.update({ where: { id: req.userId }, data: { plan } });
       // Milestone 12 §1.4: lifts any FREE-trial expiry ceiling from the
       // user's existing watches now that they've actually paid (or redeemed
@@ -105,6 +109,11 @@ export async function processCheckout(prisma: PrismaClient, req: CheckoutRequest
       await tx.subscription.create({
         data: { userId: req.userId, plan, source: "PROMO", status: "ACTIVE", expiresAt },
       });
+
+      // B2 step 2·A dual-write: mirror the plan into the control plane. Same
+      // expiry the store_spy.Subscription just got. `verify:b2-step1` is the
+      // gate that this stays in sync — see docs/store-spy-control-plane-b2.md.
+      await syncControlPlanePlan(tx, { userId: req.userId, plan, trialEndsAt: null, paidPeriodEnd: expiresAt });
 
       await recordAdminAction(tx, {
         actorId: req.userId,

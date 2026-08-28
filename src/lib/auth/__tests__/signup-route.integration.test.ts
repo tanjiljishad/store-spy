@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { POST as signup } from "../../../app/api/auth/signup/route";
 import { _resetRateLimitState } from "../../security/rate-limit";
 import { verifyPassword } from "../password";
+import { resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -23,6 +24,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(`TRUNCATE "MarketingConversionEvent","Session","Account","User" RESTART IDENTITY CASCADE`);
+  await resetControlPlane(prisma);
   _resetRateLimitState();
 });
 

@@ -4,6 +4,7 @@ import { canGrantRole, type Role } from "./roles";
 import { recordAdminAction } from "./audit";
 import type { AdminActor } from "./guard";
 import { clearTrialCeiling } from "../billing/subscription-sweep";
+import { syncControlPlanePlan } from "../control-plane/provision";
 
 /**
  * The admin-facing user operations — search, detail, plan/role writes,
@@ -105,18 +106,27 @@ export async function getUserDetail(prisma: PrismaClient, userId: string): Promi
  * row, while the script calls it with the plain top-level client.
  */
 export async function setUserPlan(
-  db: Pick<PrismaClient, "user" | "watchlist">,
+  db: Pick<PrismaClient, "user" | "watchlist" | "cpAccount" | "cpUser" | "cpSubscription" | "cpEntitlement">,
   userId: string,
   plan: PlanTier,
 ): Promise<{ id: string; email: string; plan: PlanTier } | null> {
   try {
-    const updated = await db.user.update({ where: { id: userId }, data: { plan }, select: { id: true, email: true, plan: true } });
+    // TRANSITIONAL (B2 step 2·B): the User.plan write. 2·A keeps it alongside
+    // the control-plane write below; 2·B drops it.
+    const updated = await db.user.update({
+      where: { id: userId },
+      data: { plan },
+      select: { id: true, email: true, plan: true, freeTrialEndsAt: true },
+    });
     // Milestone 12 §1.4: an admin moving a user off FREE must lift any
     // trial-ceiling expiry the same way a real checkout does (see
     // billing/checkout.ts) — this is the shared implementation both call,
     // so an admin-granted plan change isn't a second path that could drift.
     if (plan !== "FREE") await clearTrialCeiling(db, userId);
-    return updated;
+    // B2 step 2·A dual-write. Admin-set plans are perpetual (paidPeriodEnd
+    // null), matching the step-1 backfill for admin-set BASIC users.
+    await syncControlPlanePlan(db, { userId, plan, trialEndsAt: updated.freeTrialEndsAt, paidPeriodEnd: null });
+    return { id: updated.id, email: updated.email, plan: updated.plan };
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") return null; // not found
     throw e;
@@ -204,7 +214,19 @@ export async function updateUserRole(
       }
     }
 
+    // TRANSITIONAL (B2 step 2·B): the store_spy.User.role write. 2·A keeps it
+    // next to the store_spy.UserAdminRole write; 2·B repoints role readers
+    // (jwt-session-refresh, account/delete) to UserAdminRole and drops this.
     await tx.user.update({ where: { id: targetUserId }, data: { role: newRole } });
+    if (newRole === "USER") {
+      await tx.userAdminRole.deleteMany({ where: { userId: targetUserId } });
+    } else {
+      await tx.userAdminRole.upsert({
+        where: { userId: targetUserId },
+        create: { userId: targetUserId, role: newRole },
+        update: { role: newRole },
+      });
+    }
     await recordAdminAction(tx, {
       actorId: actor.id,
       actorEmail: actor.email,
@@ -231,7 +253,11 @@ export async function revokeUserSessions(
     if (!target) return { outcome: "user_not_found" };
 
     const now = new Date();
+    // TRANSITIONAL (B2 step 2·B): the store_spy.User write. 2·A dual-writes so
+    // the revocation floor is already in control_plane.users when
+    // jwt-session-refresh starts reading it there.
     await tx.user.update({ where: { id: targetUserId }, data: { sessionsValidAfter: now } });
+    await tx.cpUser.updateMany({ where: { id: targetUserId }, data: { sessionsValidAfter: now } });
     await recordAdminAction(tx, {
       actorId: actor.id,
       actorEmail: actor.email,

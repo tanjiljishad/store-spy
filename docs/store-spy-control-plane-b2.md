@@ -159,7 +159,7 @@ identical mechanism, identical bound.
 | Step | Migration | Nature |
 |---|---|---|
 | 1 | `<ts>_b2_step1_control_plane_users_backfill` | hand-written, fully idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`, `INSERT … ON CONFLICT DO NOTHING`): `ALTER control_plane.users ADD COLUMN` ×5, `CREATE store_spy.UserAdminRole` / `MarketingConsent`, backfill. **No FK changes.** `down.sql` included. Additive only. |
-| 2 (M) | `20260828180000_b2_step2_swap_user_fks_to_control_plane` | **written — in review.** Swap `Account` / `AdminPermissionGrant` / `AnalysisUsage` / `Session` / `Watchlist` `*_userId_fkey` from `store_spy.User` to `control_plane.users` (names reused); add the same FK to `UserAdminRole` / `MarketingConsent`. Idempotent; `down.sql` (safe pre-2·B). Verified on a scratch DB: swap, cross-schema cascade, idempotent re-run, down round-trip. |
+| 2·M | `_migrations-staged/20260828180000_b2_step2_swap_user_fks_to_control_plane` | **written + scratch-verified, STAGED OUT of `prisma/migrations/`.** Swap `Account` / `AdminPermissionGrant` / `AnalysisUsage` / `Session` / `Watchlist` `*_userId_fkey` from `store_spy.User` to `control_plane.users` (names reused); add the same FK to `UserAdminRole` / `MarketingConsent`. The instant it lands, EVERY integration fixture that creates a `store_spy.User` with a child row needs a `control_plane` account — so it moves back into `prisma/migrations/` as one unit with the ~38-file fixture migration to `makeStoreSpyUser()`, as its own step (**2·M**) between the 2·A merge and the 2·B cutover. Idempotent; `down.sql` (safe pre-2·B). |
 | 2 (billing) | `<ts>_b2_step2_move_billing_to_control_plane` | folded in from the old step 3. `ALTER control_plane.subscriptions ADD COLUMN source`; `CREATE control_plane.checkouts`; migrate `store_spy.Subscription`/`Checkout` rows (backfill `source`, re-key `userId` → `account_id`); `period_end` already correct from step 1; drop `store_spy.Subscription`/`Checkout`. Lands with 2·B. |
 | 4 | `<ts>_b2_step4_drop_store_spy_user` | `DROP TABLE store_spy."User"`; `DROP TYPE store_spy."PlanTier"`; drop `freeTrialEndsAt` (already unreferenced). Irreversible — gated on the column-home verification. |
 | 6 | `<ts>_b2_step6_drop_cp_prefix` | `ALTER TABLE store_spy."Account" RENAME TO "OAuthAccount"`; Prisma model renames `Cp*` → plain (no SQL — `@@map` names already unprefixed). |
@@ -390,14 +390,36 @@ invalidates every existing JWT on its next request. B2 does not do this.
 
 ## Step 2 verification
 
-- 2·A: full suite green with dual-write + shadow row (no behaviour change).
-- Migration M: `ADD`/`DROP` both directions on a scratch DB with backfilled +
-  shadow rows; a cross-schema `ON DELETE CASCADE` from each child actually
-  cascades; `down.sql` round-trip.
-- 2·B: every auth integration test; a real `next start` browser sign-in
+- **2·A** (done): full unit + integration suite green with the dual-writes +
+  shadow row (73 files / 516 tests). `src/lib/control-plane/__tests__/dual-write-parity.integration.test.ts`
+  drives signup / checkout / admin `setUserPlan` (both directions) / sweep and
+  asserts `User.plan` and the control plane stay in sync at each step, using
+  the same `planParityMismatches()` the gate script runs.
+- **The gate before 2·B**: `npm run verify:b2-step1` (`scripts/verify-b2-step1-semantics.ts`)
+  — re-used from step 1, now the standing check that every 2·A dual-write path
+  kept both sides in step. Run it after 2·A is deployed and exercised (real
+  signups, a real checkout, an admin plan change, a sweep). **It must exit 0
+  before 2·B lands.** A path that writes `User.plan` but not the control plane
+  (or vice-versa) shows up here as a per-user disagreement.
+- **2·M**: `ADD`/`DROP` both directions on a scratch DB with backfilled +
+  shadow rows (done); a cross-schema `ON DELETE CASCADE` from each child
+  actually cascades (done); `down.sql` round-trip (done); + the full suite
+  green with the fixture migration applied.
+- **2·B**: every auth integration test; a real `next start` browser sign-in
   (Credentials **and**, if configured, OAuth); a pre-cutover JWT (minted
   against 2·A) still authorises a request after 2·B is deployed — asserted,
   not assumed.
-- Column-home discharge: `grep` evidence that no `prisma.user.` /
+- **Column-home discharge**: `grep` evidence that no `prisma.user.` /
   `session.user.plan` / `plan-limits` reader remains, table-by-table against
   the step-4 gate list.
+
+## A note on the self-heal in 2·A
+
+`syncControlPlanePlan()` calls `ensureControlPlaneAccount()` first, which
+creates `acct_<userId>` + its `cpUser` from the shadow `store_spy.User` row if
+missing. In production this is always a no-op (signup and the OAuth adapter
+provision up front). It exists so the dual-writes converge to a correct
+control plane even from an inconsistent start, and so an integration fixture
+that creates a bare `store_spy.User` still works without replicating the
+provisioning. It is removed in 2·B with the rest of the dual-write
+scaffolding — grep `TRANSITIONAL (B2 step 2·B)`.

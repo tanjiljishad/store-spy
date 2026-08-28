@@ -2,19 +2,21 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteOwnAccount } from "../delete";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () =>
-  prisma.$executeRawUnsafe(
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(
     `TRUNCATE "AdminAuditLog","AdminPermissionGrant","PromoRedemption","PromoCode","Checkout","Subscription","AnalysisUsage","Watchlist","Session","Account","Store","User" RESTART IDENTITY CASCADE`,
-  ),
-);
+  );
+  await resetControlPlane(prisma);
+});
 
 async function makeUser(role: "USER" | "SUPER_ADMIN" = "USER") {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role } });
+  return makeStoreSpyUser(prisma, { role });
 }
 async function makeStore() {
   return prisma.store.create({ data: { domain: `${randomUUID().slice(0, 8)}.com`, platform: "SHOPIFY" } });

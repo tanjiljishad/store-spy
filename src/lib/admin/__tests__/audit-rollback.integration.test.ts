@@ -13,10 +13,10 @@ vi.mock("../audit", async (importOriginal) => {
 });
 
 import { PrismaClient } from "@prisma/client";
-import { randomUUID } from "node:crypto";
 import { recordAdminAction } from "../audit";
 import { revokeUserSessions, updateUserPlanWithAudit, updateUserRole } from "../users-service";
 import type { AdminActor } from "../guard";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL unset — run via `npm run test:integration`");
@@ -32,6 +32,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(`TRUNCATE "AdminAuditLog","Session","Account","User" RESTART IDENTITY CASCADE`);
+  await resetControlPlane(prisma);
 });
 
 afterEach(() => {
@@ -42,14 +43,14 @@ afterEach(() => {
 });
 
 async function makeActor(): Promise<AdminActor> {
-  const u = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "SUPER_ADMIN" } });
+  const u = await makeStoreSpyUser(prisma, { role: "SUPER_ADMIN" });
   return { id: u.id, email: u.email, plan: "FREE", role: "SUPER_ADMIN" };
 }
 
 describe("admin writes pair with exactly one audit row, atomically", () => {
   it("updateUserRole: succeeds normally and writes exactly one audit row", async () => {
     const actor = await makeActor();
-    const target = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "USER" } });
+    const target = await makeStoreSpyUser(prisma, { role: "USER" });
 
     const result = await updateUserRole(prisma, actor, target.id, "SUPPORT_ADMIN");
 
@@ -60,7 +61,7 @@ describe("admin writes pair with exactly one audit row, atomically", () => {
 
   it("updateUserRole: a forced audit-write failure rolls back the role change", async () => {
     const actor = await makeActor();
-    const target = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "USER" } });
+    const target = await makeStoreSpyUser(prisma, { role: "USER" });
 
     vi.mocked(recordAdminAction).mockRejectedValueOnce(new Error("simulated audit write failure"));
 
@@ -74,7 +75,7 @@ describe("admin writes pair with exactly one audit row, atomically", () => {
 
   it("updateUserPlanWithAudit: succeeds normally and writes exactly one audit row", async () => {
     const actor = await makeActor();
-    const target = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+    const target = await makeStoreSpyUser(prisma, { plan: "FREE" });
 
     const result = await updateUserPlanWithAudit(prisma, actor, target.id, "BASIC");
 
@@ -85,7 +86,7 @@ describe("admin writes pair with exactly one audit row, atomically", () => {
 
   it("updateUserPlanWithAudit: a forced audit-write failure rolls back the plan change", async () => {
     const actor = await makeActor();
-    const target = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+    const target = await makeStoreSpyUser(prisma, { plan: "FREE" });
 
     vi.mocked(recordAdminAction).mockRejectedValueOnce(new Error("simulated audit write failure"));
 
@@ -99,7 +100,7 @@ describe("admin writes pair with exactly one audit row, atomically", () => {
 
   it("revokeUserSessions: succeeds normally and writes exactly one audit row", async () => {
     const actor = await makeActor();
-    const target = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    const target = await makeStoreSpyUser(prisma);
 
     const result = await revokeUserSessions(prisma, actor, target.id);
 
@@ -110,7 +111,7 @@ describe("admin writes pair with exactly one audit row, atomically", () => {
 
   it("revokeUserSessions: a forced audit-write failure rolls back sessionsValidAfter", async () => {
     const actor = await makeActor();
-    const target = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    const target = await makeStoreSpyUser(prisma);
 
     vi.mocked(recordAdminAction).mockRejectedValueOnce(new Error("simulated audit write failure"));
 

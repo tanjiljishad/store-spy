@@ -63,6 +63,16 @@ export async function deleteOwnAccount(prisma: PrismaClient, userId: string): Pr
     await tx.checkout.deleteMany({ where: { userId } });
     await tx.subscription.deleteMany({ where: { userId } });
 
+    // B2 step 2·A: the control-plane account (cascades control_plane.users +
+    // its subscriptions + entitlements). Account id is `acct_<userId>` by the
+    // provisioning convention. deleteMany so a missing row is a no-op.
+    await tx.cpAccount.deleteMany({ where: { id: `acct_${userId}` } });
+    // These two tables have no FK to store_spy.User until migration
+    // 20260828180000, so tx.user.delete() below won't cascade them yet —
+    // delete them explicitly for the 2·A window. Harmless (no-op) after M.
+    await tx.userAdminRole.deleteMany({ where: { userId } });
+    await tx.marketingConsent.deleteMany({ where: { userId } });
+
     // Distinct affected rows counted BEFORE either UPDATE — a row can
     // legitimately match both conditions (e.g. checkout.completed_free's
     // own audit write sets actorId AND targetId to the same acting user),

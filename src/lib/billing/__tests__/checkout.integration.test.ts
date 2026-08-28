@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { expirePendingCheckouts, processCheckout } from "../checkout";
 import { listPriceCents } from "../pricing";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL unset — run via `npm run test:integration`");
@@ -17,10 +18,11 @@ beforeEach(async () => {
   await prisma.$executeRawUnsafe(
     `TRUNCATE "AdminAuditLog","PromoRedemption","PromoCode","Checkout","Subscription","User" RESTART IDENTITY CASCADE`,
   );
+  await resetControlPlane(prisma);
 });
 
 async function makeUser() {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+  return makeStoreSpyUser(prisma, { plan: "FREE" });
 }
 async function makePromo(overrides: Partial<Parameters<typeof prisma.promoCode.create>[0]["data"]> = {}) {
   return prisma.promoCode.create({

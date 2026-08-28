@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { expireDueSubscriptions } from "../subscription-sweep";
 import { maxActiveMonitoredStores } from "../../entitlements/entitlement-service";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 /**
  * Milestone 11 Phase 3 §3.4 amendment's four required tests. Deliberately
@@ -26,10 +27,11 @@ beforeEach(async () => {
   await prisma.$executeRawUnsafe(
     `TRUNCATE "AdminAuditLog","Watchlist","Subscription","Store","User" RESTART IDENTITY CASCADE`,
   );
+  await resetControlPlane(prisma);
 });
 
 async function makeUser(plan: "FREE" | "BASIC" = "BASIC") {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan } });
+  return makeStoreSpyUser(prisma, { plan });
 }
 async function makeStore(tier: "HOT" | "COLD" = "HOT") {
   return prisma.store.create({ data: { domain: `${randomUUID().slice(0, 8)}.com`, platform: "SHOPIFY", tier } });

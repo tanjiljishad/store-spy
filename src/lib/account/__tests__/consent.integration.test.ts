@@ -2,16 +2,20 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { needsConsentInterstitial, recordOAuthWelcomeConsent } from "../consent";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () => prisma.$executeRawUnsafe(`TRUNCATE "User" RESTART IDENTITY CASCADE`));
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(`TRUNCATE "User" RESTART IDENTITY CASCADE`);
+  await resetControlPlane(prisma);
+});
 
-/** No passwordHash — exactly the shape Auth.js's Prisma adapter creates for a first OAuth sign-in. */
+/** No passwordHash, no tosAcceptedAt — the shape B2 step 2·A's OAuth adapter creates for a first OAuth sign-in. */
 async function makeOAuthShapedUser() {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+  return makeStoreSpyUser(prisma, { passwordHash: null, tosAcceptedAt: null });
 }
 
 describe("needsConsentInterstitial", () => {
@@ -21,7 +25,7 @@ describe("needsConsentInterstitial", () => {
   });
 
   it("is false once tosAcceptedAt is set (credentials signup, or a completed interstitial)", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, tosAcceptedAt: new Date() } });
+    const user = await makeStoreSpyUser(prisma, { tosAcceptedAt: new Date() });
     expect(await needsConsentInterstitial(prisma, user.id)).toBe(false);
   });
 

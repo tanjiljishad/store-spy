@@ -23,14 +23,22 @@ export const SIGNUP_FORM_CONSENT_SOURCE = "signup_form";
 export const OAUTH_WELCOME_CONSENT_SOURCE = "oauth_welcome_interstitial";
 
 export async function grantMarketingConsent(
-  db: Pick<PrismaClient, "user">,
+  db: Pick<PrismaClient, "user" | "marketingConsent">,
   userId: string,
   source: string,
   now: Date = new Date(),
 ): Promise<void> {
+  // TRANSITIONAL (B2 step 2·B): the store_spy.User column write. 2·A keeps it
+  // next to the store_spy.MarketingConsent table write; 2·B drops the column
+  // half and repoints readers to the table.
   await db.user.update({
     where: { id: userId },
     data: { marketingConsent: true, marketingConsentAt: now, marketingConsentSource: source },
+  });
+  await db.marketingConsent.upsert({
+    where: { userId },
+    create: { userId, consent: true, consentAt: now, consentSource: source },
+    update: { consent: true, consentAt: now, consentSource: source },
   });
 }
 
@@ -42,6 +50,8 @@ export async function grantMarketingConsent(
  * AdminAuditLog, applied to a boolean instead of a row). Idempotent: no
  * error, no-op in effect, if the user had never actually consented.
  */
-export async function revokeMarketingConsent(db: Pick<PrismaClient, "user">, userId: string): Promise<void> {
+export async function revokeMarketingConsent(db: Pick<PrismaClient, "user" | "marketingConsent">, userId: string): Promise<void> {
+  // TRANSITIONAL (B2 step 2·B): dual-write, same as grantMarketingConsent.
   await db.user.update({ where: { id: userId }, data: { marketingConsent: false } });
+  await db.marketingConsent.upsert({ where: { userId }, create: { userId, consent: false }, update: { consent: false } });
 }
