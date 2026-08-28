@@ -174,3 +174,79 @@ describe("resolveEntitlement — subscription status & expiry only (B3, revised 
     });
   });
 });
+
+describe("resolveEntitlement — the FREE two-subscription shape (subf_ + subt_ concurrently live)", () => {
+  // subf_: ACTIVE perpetual, grants analysis.run. subt_: TRIALING, grants monitoring.slots.
+  // Backfill gives both the SAME createdAt (u.createdAt), so this also exercises
+  // that an identical createdAt across the two rows causes no ambiguity — they
+  // carry different feature_keys, so each query matches exactly one.
+  async function makeFreeAccount(trialPeriodEnd: Date) {
+    const acc = await makeAccount();
+    const created = new Date(Date.now() - 2 * 24 * 60 * 60_000);
+    const subf = await makeSubscription(acc.id, { status: "ACTIVE", periodEnd: null, createdAt: created });
+    const subt = await makeSubscription(acc.id, { status: "TRIALING", periodEnd: trialPeriodEnd, createdAt: created });
+    await grant(subf.id, "store_spy.analysis.run", 10);
+    await grant(subt.id, "store_spy.monitoring.slots", 1);
+    return acc;
+  }
+
+  it("in-trial: analysis.run resolves off subf_ (ok, quota 10), monitoring.slots off subt_ (ok, quota 1)", async () => {
+    const acc = await makeFreeAccount(future());
+    expect(await resolveEntitlement(prisma, { accountId: acc.id, featureKey: "store_spy.analysis.run" })).toEqual({
+      allowed: true,
+      quota: 10,
+      reason: "ok",
+    });
+    expect(await resolveEntitlement(prisma, { accountId: acc.id, featureKey: "store_spy.monitoring.slots" })).toEqual({
+      allowed: true,
+      quota: 1,
+      reason: "ok",
+    });
+  });
+
+  it("past trial: monitoring.slots becomes trial_expired while analysis.run stays ok — the two subs resolve independently", async () => {
+    const acc = await makeFreeAccount(past());
+    expect(await resolveEntitlement(prisma, { accountId: acc.id, featureKey: "store_spy.analysis.run" })).toEqual({
+      allowed: true,
+      quota: 10,
+      reason: "ok",
+    });
+    expect(await resolveEntitlement(prisma, { accountId: acc.id, featureKey: "store_spy.monitoring.slots" })).toEqual({
+      allowed: false,
+      quota: 1,
+      reason: "trial_expired",
+    });
+  });
+});
+
+describe("resolveEntitlement — tie-break is a total order (deterministic)", () => {
+  it("two subscriptions, same feature_key, same status, IDENTICAL createdAt, different quota → the more generous one, every call", async () => {
+    const acc = await makeAccount();
+    const sameInstant = new Date(Date.now() - 24 * 60 * 60_000);
+    const subA = await makeSubscription(acc.id, { status: "ACTIVE", periodEnd: null, createdAt: sameInstant });
+    const subB = await makeSubscription(acc.id, { status: "ACTIVE", periodEnd: null, createdAt: sameInstant });
+    await grant(subA.id, FEATURE, 1);
+    await grant(subB.id, FEATURE, 20);
+
+    const results = await Promise.all(
+      Array.from({ length: 25 }, () => resolveEntitlement(prisma, { accountId: acc.id, featureKey: FEATURE })),
+    );
+    // All 25 identical, and it's the more generous grant.
+    for (const r of results) expect(r).toEqual({ allowed: true, quota: 20, reason: "ok" });
+    expect(new Set(results.map((r) => JSON.stringify(r))).size).toBe(1);
+  });
+
+  it("same feature_key on an EXPIRED and an ACTIVE sub with identical createdAt → the ACTIVE one, deterministically", async () => {
+    const acc = await makeAccount();
+    const sameInstant = new Date(Date.now() - 24 * 60 * 60_000);
+    const dead = await makeSubscription(acc.id, { status: "CANCELED", periodEnd: null, createdAt: sameInstant });
+    const live = await makeSubscription(acc.id, { status: "ACTIVE", periodEnd: null, createdAt: sameInstant });
+    await grant(dead.id, FEATURE, 99);
+    await grant(live.id, FEATURE, 50);
+
+    const results = await Promise.all(
+      Array.from({ length: 25 }, () => resolveEntitlement(prisma, { accountId: acc.id, featureKey: FEATURE })),
+    );
+    for (const r of results) expect(r).toEqual({ allowed: true, quota: 50, reason: "ok" });
+  });
+});

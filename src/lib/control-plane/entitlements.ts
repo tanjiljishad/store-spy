@@ -30,13 +30,28 @@ export interface EntitlementResult {
 
 const ACTIVE_STATUSES = new Set(["TRIALING", "ACTIVE"]);
 
-/** Lower is better — used to pick the best row when an account has more than one subscription carrying the same feature_key (e.g. a lapsed trial plus a new paid plan). */
+/**
+ * Lower is better — used to pick the best row when an account has more than
+ * one subscription carrying the SAME feature_key (e.g. a lapsed trial plus a
+ * newer paid plan after an upgrade). Note the FREE two-subscription shape
+ * (see CpSubscription in schema.prisma) does NOT hit this path: `subf_`
+ * carries `store_spy.analysis.run` and `subt_` carries
+ * `store_spy.monitoring.slots`, different keys, so a query for either key
+ * matches exactly one row.
+ */
 const REASON_RANK: Record<EntitlementReason, number> = {
   ok: 0,
   trial_expired: 1,
   subscription_inactive: 2,
   no_entitlement: 3,
 };
+
+const cmp = <T>(a: T, b: T): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Sort rank for "more generous" — null quota (unlimited / boolean grant) is the most generous. Tie-break only, among rows with the same reason. */
+function quotaRank(quota: number | null): number {
+  return quota === null ? Number.MAX_SAFE_INTEGER : quota;
+}
 
 function evaluate(
   row: { quota: number | null; subscription: { status: string; periodEnd: Date | null } },
@@ -67,20 +82,28 @@ export async function resolveEntitlement(
   const rows = await prisma.cpEntitlement.findMany({
     where: { featureKey: args.featureKey, subscription: { accountId: args.accountId } },
     select: {
+      id: true,
       quota: true,
       subscription: { select: { status: true, periodEnd: true, createdAt: true } },
     },
+    // Deterministic input order for the sort below — belt to its suspenders.
+    orderBy: [{ subscription: { createdAt: "desc" } }, { id: "asc" }],
   });
 
   if (rows.length === 0) {
     return { allowed: false, quota: null, reason: "no_entitlement" };
   }
 
-  // Best reason wins; tie-break on the newer subscription.
+  // Total order, so the result is deterministic even when two subscriptions
+  // carry the same feature_key with an identical createdAt: best reason, then
+  // the more generous quota, then the newer subscription, then the row id.
   return rows
-    .map((r) => ({ result: evaluate(r, now), createdAt: r.subscription.createdAt }))
-    .sort((a, b) => {
-      const byReason = REASON_RANK[a.result.reason] - REASON_RANK[b.result.reason];
-      return byReason !== 0 ? byReason : b.createdAt.getTime() - a.createdAt.getTime();
-    })[0].result;
+    .map((r) => ({ result: evaluate(r, now), createdAt: r.subscription.createdAt, id: r.id }))
+    .sort(
+      (a, b) =>
+        cmp(REASON_RANK[a.result.reason], REASON_RANK[b.result.reason]) || // best reason
+        cmp(quotaRank(b.result.quota), quotaRank(a.result.quota)) || // then most generous quota
+        cmp(b.createdAt.getTime(), a.createdAt.getTime()) || // then newer subscription
+        cmp(a.id, b.id), // then row id — a total order, so always deterministic
+    )[0].result;
 }

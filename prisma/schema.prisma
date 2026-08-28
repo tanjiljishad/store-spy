@@ -1454,11 +1454,28 @@ enum CpSubscriptionStatus {
   @@schema("control_plane")
 }
 
-/// One row per (account, product) billing relationship. An account may
-/// accumulate several over time for the same product (an expired trial, then
-/// a paid plan) — the entitlements endpoint picks the current one
-/// (status TRIALING/ACTIVE, latest period_end), so there is deliberately no
-/// unique on (account_id, product_id).
+/// One row per (account, product) billing relationship — BUT "subscription"
+/// is deliberately not 1:1 with an account+product here, for two reasons:
+///
+///  1. Over time an account accumulates rows for the same product (an expired
+///     trial, then a paid plan). resolveEntitlement() picks the best row per
+///     feature_key, so there is no unique on (account_id, product_id).
+///
+///  2. A FREE Store Spy account holds TWO CONCURRENT rows for `store-spy`,
+///     because analysis and monitoring have different lifecycles:
+///       - `subf_<uid>`  status ACTIVE, period_end NULL (perpetual)
+///                       -> grants entitlement `store_spy.analysis.run`
+///       - `subt_<uid>`  status TRIALING, period_end = the 30-day trial end
+///                       -> grants entitlement `store_spy.monitoring.slots`
+///     Analysis is free forever (never trial-gated); monitoring is free only
+///     during the trial. One TRIALING row covering both would make a
+///     post-trial FREE user fail the analysis gate too, which contradicts
+///     today's plan-limits.ts. Splitting them lets each feature_key resolve
+///     against its own subscription's status/expiry. A paid plan collapses
+///     back to ONE ACTIVE row carrying all three features.
+///     The two rows carry different feature_keys, so resolveEntitlement()
+///     never has to disambiguate between them — its multi-row tie-break is
+///     for the case in (1), not this one.
 model CpSubscription {
   id          String               @id @default(cuid())
   accountId   String               @map("account_id")
