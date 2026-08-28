@@ -20,6 +20,11 @@ services:
       # default locale — a differently-localed Docker host can otherwise hand
       # you WIN1252/SQL_ASCII and event.createMany() dies on the first arrow.
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    # The published (host) port below must stay in sync with the DATABASE_URL in
+    # .env.test.example (committed) and each dev's local .env.test (gitignored),
+    # and with EXPECTED_PORT in vitest.integration.setup.ts. A local .env.test
+    # drifted to 5432 once; the preflight in the setup file now fails the run
+    # loudly if the live DATABASE_URL doesn't match.
     ports:
       - "5433:5432"
     tmpfs:

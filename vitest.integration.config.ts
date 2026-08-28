@@ -16,6 +16,9 @@ import path from "node:path";
 export default defineConfig({
   test: {
     include: ["src/**/*.integration.test.ts"],
+    // Aborts loudly if DATABASE_URL isn't the disposable compose Postgres,
+    // before any beforeEach TRUNCATE can touch the wrong database.
+    setupFiles: ["./vitest.integration.setup.ts"],
     pool: "threads",
     poolOptions: { threads: { singleThread: true } },
     fileParallelism: false,
