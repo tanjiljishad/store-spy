@@ -7,6 +7,7 @@ import { checkRateLimit, getClientIp } from "../../../../lib/security/rate-limit
 import { SIGNUP_FORM_CONSENT_SOURCE } from "../../../../lib/marketing/consent";
 import { COOKIE_CONSENT_COOKIE_NAME, parseCookieConsent } from "../../../../lib/marketing/cookie-consent";
 import { recordSignupConversionEvents } from "../../../../lib/marketing/conversion-events";
+import { sendVerificationEmail } from "../../../../lib/email/verification-email";
 
 /**
  * Creates a Credentials-provider account. Does not sign the user in itself
@@ -114,6 +115,17 @@ export async function POST(req: NextRequest) {
       await recordSignupConversionEvents(prisma, user.id, cookieConsent);
     } catch (e) {
       console.error("[api/auth/signup] recordSignupConversionEvents failed (non-fatal):", e);
+    }
+
+    // Best-effort, same isolation as recordSignupConversionEvents above — a
+    // Resend outage must never break account creation itself. A user who
+    // never receives this email can still get one via the "resend" button
+    // on /verify-email (DashboardLayout/AdminLayout redirect there until
+    // emailVerified is set).
+    try {
+      await sendVerificationEmail(req.nextUrl.origin, user.id, user.email);
+    } catch (e) {
+      console.error("[api/auth/signup] sendVerificationEmail failed (non-fatal):", e);
     }
 
     return await respondNoFasterThan(

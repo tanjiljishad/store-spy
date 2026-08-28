@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { useCookieConsent } from "@/lib/marketing/cookie-consent";
+import { useCookieConsent } from "@/lib/marketing/cookie-consent-client";
 import { getMetaPixelId, META_PIXEL_SCRIPT_URL } from "@/lib/marketing/pixels/meta";
 
 declare global {

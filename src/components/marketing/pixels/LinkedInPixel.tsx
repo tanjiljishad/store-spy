@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { useCookieConsent } from "@/lib/marketing/cookie-consent";
+import { useCookieConsent } from "@/lib/marketing/cookie-consent-client";
 import { getLinkedInPartnerId, LINKEDIN_INSIGHT_TAG_SCRIPT_URL } from "@/lib/marketing/pixels/linkedin";
 
 declare global {

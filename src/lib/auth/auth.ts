@@ -73,6 +73,21 @@ if (configuredProviders.google) {
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      // Default profile() (Auth.js's OIDC client) does not map
+      // emailVerified at all — overridden here so an OAuth-created row
+      // never hits the email-verification gate (needsEmailVerification())
+      // for an email Google has already verified itself. Google's OIDC
+      // userinfo returns `email_verified` as a real boolean per-account, so
+      // this only trusts it when Google itself says so, not unconditionally.
+      profile(profile) {
+        return {
+          id: profile.sub,
+          name: profile.name,
+          email: profile.email,
+          image: profile.picture,
+          emailVerified: profile.email_verified ? new Date() : null,
+        };
+      },
     }),
   );
 }
@@ -82,6 +97,19 @@ if (configuredProviders.facebook) {
     Facebook({
       clientId: process.env.FACEBOOK_CLIENT_ID!,
       clientSecret: process.env.FACEBOOK_CLIENT_SECRET!,
+      // Facebook's Graph API has no `email_verified` field to read — but it
+      // only ever returns `email` at all when that address is confirmed
+      // verified with Facebook (Facebook's own platform policy, not an
+      // assumption made here), so presence of `email` is itself the signal.
+      profile(profile) {
+        return {
+          id: profile.id,
+          name: profile.name,
+          email: profile.email,
+          image: profile.picture?.data?.url,
+          emailVerified: profile.email ? new Date() : null,
+        };
+      },
     }),
   );
 }

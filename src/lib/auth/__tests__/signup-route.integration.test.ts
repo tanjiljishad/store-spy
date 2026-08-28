@@ -50,6 +50,18 @@ describe("POST /api/auth/signup", () => {
     expect(user.plan).toBe("FREE");
   });
 
+  // A Credentials account starts unverified — GET /verify-email (the mailed
+  // link) or an operator sets this, never the signup route itself. Also
+  // proves a Resend/EMAIL_VERIFICATION_TOKEN_SECRET failure (neither is
+  // configured in the test env — see sendVerificationEmail's non-fatal
+  // try/catch in the route) doesn't fail signup itself: this still 201s.
+  it("creates the account unverified — emailVerified is null right after credentials signup", async () => {
+    const res = await signup(req({ email: "unverified@example.com", password: "correct-password" }));
+    expect(res.status).toBe(201);
+    const user = await prisma.user.findUniqueOrThrow({ where: { email: "unverified@example.com" } });
+    expect(user.emailVerified).toBeNull();
+  });
+
   // Milestone 11, Phase 2, invariant 5: signup must never accept a `role`
   // field — the route already picks fields explicitly (email/password/name
   // only), so this is a regression lock confirming that stays true, not a

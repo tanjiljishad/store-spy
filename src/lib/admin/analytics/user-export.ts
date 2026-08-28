@@ -64,6 +64,14 @@ export async function exportUsers(
 // never be a complete fix. This is the correct layer: neutralize at the
 // one place these values actually become formulas, not at every place a
 // string might end up here.
+//
+// The guard is NOT invisible: the leading `'` becomes part of the exported
+// value itself, not a display-only artifact Excel/Sheets strips on the way
+// in — a program parsing this CSV programmatically sees the literal string
+// `'=foo@bar.com`, not `=foo@bar.com`. Deliberate and fine for this export's
+// actual consumer (a human opening it in a spreadsheet); do not "clean up"
+// this leading quote later without re-solving formula injection some other
+// way first.
 const DANGEROUS_PREFIX_RE = /^[=+\-@\t\r]/;
 // \r is included even though it can't start a *quoted* field meaningfully
 // on its own — a bare CR embedded mid-value can still be read as a row

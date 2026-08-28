@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { requireUser, UnauthorizedError } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { needsConsentInterstitial } from "@/lib/account/consent";
+import { needsEmailVerification } from "@/lib/account/email-verification";
 import { permissionsFor } from "@/lib/admin/roles";
 import { hasAnyActiveGrant } from "@/lib/admin/permissions-service";
 
@@ -52,6 +53,14 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   if (!hasEffectivePermission) notFound();
   if (await needsConsentInterstitial(prisma, user.id)) {
     redirect("/welcome");
+  }
+  // Same "this layout is a sibling of DashboardLayout, not nested under it"
+  // gap the consent-gate addendum above already closed once — an account
+  // promoted via scripts/grant-admin.ts before ever clicking its
+  // verification link would otherwise reach every /admin page around this
+  // check entirely. See needsEmailVerification()'s own doc comment.
+  if (await needsEmailVerification(prisma, user.id)) {
+    redirect("/verify-email");
   }
 
   return (

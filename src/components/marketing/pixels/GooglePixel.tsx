@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { useCookieConsent } from "@/lib/marketing/cookie-consent";
+import { useCookieConsent } from "@/lib/marketing/cookie-consent-client";
 import { getGa4MeasurementId, gtagScriptUrl } from "@/lib/marketing/pixels/google";
 
 declare global {

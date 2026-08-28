@@ -78,6 +78,21 @@ services:
       # marketing email compliance even though nothing crashes without it.
       - key: UNSUBSCRIBE_TOKEN_SECRET
         sync: false
+      # Signs the HMAC no-login email-confirmation link (GET /verify-email).
+      # See docs/environment-variables.md: fails closed if unset (every
+      # confirmation link rejected), so DashboardLayout/AdminLayout's
+      # email-verification gate becomes permanently unsatisfiable — required
+      # for real production signups.
+      - key: EMAIL_VERIFICATION_TOKEN_SECRET
+        sync: false
+      # Resend API key + From address — see docs/environment-variables.md.
+      # Both required together or nothing sends; signup/resend-verification
+      # degrade to "no email sent" rather than crashing without them, but
+      # the email-verification gate then has no way to ever pass.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
       # Milestone 12 §4.2 Step 2 — the Meta base Pixel. Not a secret (a
       # Pixel ID is public by design), but still sync: false since it's a
       # real per-environment value, not a build-time constant. Leave both

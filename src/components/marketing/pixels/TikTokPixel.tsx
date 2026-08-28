@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { useCookieConsent } from "@/lib/marketing/cookie-consent";
+import { useCookieConsent } from "@/lib/marketing/cookie-consent-client";
 import { getTikTokPixelId, tiktokPixelScriptUrl } from "@/lib/marketing/pixels/tiktok";
 
 declare global {

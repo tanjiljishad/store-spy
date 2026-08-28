@@ -57,8 +57,8 @@ describe("DashboardLayout — Milestone 12 §4.1 consent gate", () => {
     expect(redirectDestination(caught)).toBe("/welcome");
   });
 
-  it("does NOT redirect a credentials-signup-shaped account (tosAcceptedAt already set)", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, tosAcceptedAt: new Date() } });
+  it("does NOT redirect a credentials-signup-shaped account (tosAcceptedAt and emailVerified already set)", async () => {
+    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, tosAcceptedAt: new Date(), emailVerified: new Date() } });
     vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
 
     const result = await DashboardLayout({ children: "dashboard content" });
@@ -66,10 +66,23 @@ describe("DashboardLayout — Milestone 12 §4.1 consent gate", () => {
   });
 
   it("does NOT redirect an OAuth account that has already completed the interstitial once", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, tosAcceptedAt: new Date() } });
+    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, tosAcceptedAt: new Date(), emailVerified: new Date() } });
     vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
 
     const result = await DashboardLayout({ children: "dashboard content" });
     expect(result).toBeTruthy();
+  });
+
+  it("redirects a ToS-accepted-but-unverified credentials account to /verify-email", async () => {
+    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, tosAcceptedAt: new Date() } }); // no emailVerified
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+
+    let caught: unknown;
+    try {
+      await DashboardLayout({ children: null });
+    } catch (e) {
+      caught = e;
+    }
+    expect(redirectDestination(caught)).toBe("/verify-email");
   });
 });

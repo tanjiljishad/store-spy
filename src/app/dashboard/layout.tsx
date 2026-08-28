@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { needsConsentInterstitial } from "@/lib/account/consent";
+import { needsEmailVerification } from "@/lib/account/email-verification";
 import { DashboardNav } from "@/components/dashboard/DashboardNav";
 import type { ReactNode } from "react";
 
@@ -21,6 +22,11 @@ import type { ReactNode } from "react";
  * `tosAcceptedAt`, and this condition, once satisfied, never needs
  * checking again for that account, so there's no cost to re-reading it
  * from source rather than caching it in the token the way plan/role are.
+ *
+ * Email verification addendum: checked AFTER the consent gate, same
+ * fresh-read reasoning — see needsEmailVerification()'s own doc comment for
+ * why an OAuth account never actually hits this (its emailVerified is set
+ * at creation time, in auth.ts's Google/Facebook profile() overrides).
  */
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
   const user = await getCurrentUser();
@@ -29,6 +35,9 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   }
   if (await needsConsentInterstitial(prisma, user.id)) {
     redirect("/welcome");
+  }
+  if (await needsEmailVerification(prisma, user.id)) {
+    redirect("/verify-email");
   }
 
   return (

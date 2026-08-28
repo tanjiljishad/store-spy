@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { setCookieConsent, useCookieConsent } from "@/lib/marketing/cookie-consent";
+import { setCookieConsent, useCookieConsent } from "@/lib/marketing/cookie-consent-client";
 
 /**
  * Milestone 12 §4.1: "A cookie consent banner on public pages. No
