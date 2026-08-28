@@ -23,7 +23,7 @@ Steps 1–4 and 6 are B2. Step 5 is B2.5. Each step is independently testable.
 | Step | What | Reversible? | Breaks |
 |---|---|---|---|
 | **1** | Additive migration + backfill. `control_plane.users` gains identity columns; `accounts`/`users`/`subscriptions`/`entitlements` backfilled from `store_spy.User`; new `store_spy` homes for `role` and marketing consent, backfilled. **No FK changes** — a `store_spy.* → control_plane.users` FK would require every `userId` to already have a `control_plane.users` row, which nothing but the backfill provides until step 2 writes there. `store_spy.User` untouched and still authoritative. | **Yes** — `down.sql` drops the additions. | nothing. Login still runs entirely off `store_spy.User`; the full test suite is green with this applied. |
-| **2** | Repoint auth reads/writes to `control_plane.*` (signup now also writes `control_plane.{accounts,users,subscriptions,entitlements}`, so new users satisfy a `control_plane.users` FK). `plan` leaves the JWT. **Swap the `userId` FKs**: drop `*_userId_fkey → store_spy.User`, add `*_userId_cp_fkey → control_plane.users` (`Watchlist`, `AnalysisUsage`, `Account`, `AdminPermissionGrant`, `Session`, + the two step-1 tables). | Hard (code + FK swap); `store_spy.User` data still present. | **login** — verified against every auth integration test + a real `next start` browser sign-in. |
+| **2** | Identity + session + gates + billing move to `control_plane`, as one cutover (`plan` is load-bearing across all three and can't be half-migrated). Delivered as **2·A** (additive: signup/adapter write `control_plane.users` + a shadow `store_spy.User`; billing dual-writes) → **migration M** (swap the `userId` FKs to `control_plane.users`, names reused) → **2·B** (`plan` leaves the JWT; gates call the entitlements endpoint; `plan-limits.ts` deleted; shadow write + `User.plan` dual-write dropped). Folds in the old "step 3". **See "Step 2 — detailed plan" below.** | 2·A reversible; M reversible pre-2·B; 2·B hard. `store_spy.User` data still present. | **login** + gating — full auth suite, a real `next start` sign-in (Credentials + OAuth), and a pre-cutover JWT still authorising post-2·B. |
 | **3** | Repoint gates (`run-analysis.ts`, `watch.ts`, `dashboard/summary.ts`, `stores/[domain]/page.tsx`) to the entitlements endpoint. `plan-limits.ts` gutted. `Subscription` + `Checkout` moved to `control_plane`. | Hard. | **analysis + monitoring gating**, **billing writes**. |
 | **4** | Drop `store_spy.User`, `PlanTier` enum, `freeTrialEndsAt`, and the now-dead auth bits. | **No.** Gated on the column-home verification below. | point of no return. |
 | **6** | Drop the `Cp` model-name prefix; `store_spy.Account` → `store_spy.OAuthAccount`. Pure rename. | Mechanical. | nothing functional. |
@@ -159,8 +159,8 @@ identical mechanism, identical bound.
 | Step | Migration | Nature |
 |---|---|---|
 | 1 | `<ts>_b2_step1_control_plane_users_backfill` | hand-written, fully idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`, `INSERT … ON CONFLICT DO NOTHING`): `ALTER control_plane.users ADD COLUMN` ×5, `CREATE store_spy.UserAdminRole` / `MarketingConsent`, backfill. **No FK changes.** `down.sql` included. Additive only. |
-| 2 | `<ts>_b2_step2_drop_store_spy_user_fks` | drop the 5 original `*_userId_fkey` constraints to `store_spy.User`. Small; pairs with the auth-repoint code PR. |
-| 3 | `<ts>_b2_step3_move_billing_to_control_plane` | `ALTER control_plane.subscriptions ADD COLUMN source`; `CREATE control_plane.checkouts`; migrate `store_spy.Subscription`/`Checkout` rows (backfilling `source` and re-keying `userId` → `account_id`); `period_end` already correct from step 1; drop `store_spy.Subscription`/`Checkout`. |
+| 2 (M) | `20260828180000_b2_step2_swap_user_fks_to_control_plane` | **written — in review.** Swap `Account` / `AdminPermissionGrant` / `AnalysisUsage` / `Session` / `Watchlist` `*_userId_fkey` from `store_spy.User` to `control_plane.users` (names reused); add the same FK to `UserAdminRole` / `MarketingConsent`. Idempotent; `down.sql` (safe pre-2·B). Verified on a scratch DB: swap, cross-schema cascade, idempotent re-run, down round-trip. |
+| 2 (billing) | `<ts>_b2_step2_move_billing_to_control_plane` | folded in from the old step 3. `ALTER control_plane.subscriptions ADD COLUMN source`; `CREATE control_plane.checkouts`; migrate `store_spy.Subscription`/`Checkout` rows (backfill `source`, re-key `userId` → `account_id`); `period_end` already correct from step 1; drop `store_spy.Subscription`/`Checkout`. Lands with 2·B. |
 | 4 | `<ts>_b2_step4_drop_store_spy_user` | `DROP TABLE store_spy."User"`; `DROP TYPE store_spy."PlanTier"`; drop `freeTrialEndsAt` (already unreferenced). Irreversible — gated on the column-home verification. |
 | 6 | `<ts>_b2_step6_drop_cp_prefix` | `ALTER TABLE store_spy."Account" RENAME TO "OAuthAccount"`; Prisma model renames `Cp*` → plain (no SQL — `@@map` names already unprefixed). |
 
@@ -268,3 +268,136 @@ integration suite is unaffected (it still creates `store_spy.User` rows).
   not step 1 — an early attempt to add these FKs in step 1 broke every test
   that creates a `store_spy.User` with no matching `control_plane.users` row
   (i.e. all of them, until signup writes both).
+
+---
+
+# Step 2 — detailed plan (review before applying)
+
+Branch `control-plane/b2-auth-to-control-plane`. **Nothing applied until
+reviewed.**
+
+## Re-scoping: step 2 is one cutover, not two
+
+`plan` is load-bearing across **three** concerns at once:
+
+1. **identity / session** — the `plan` JWT claim, set by the `jwt` callback,
+   read by `session.ts`;
+2. **gates** — `run-analysis.ts`, `watch.ts`, `dashboard/summary.ts`,
+   `stores/[domain]/page.tsx` all call `plan-limits.ts` with `user.plan`;
+3. **billing** — `checkout.ts`, `subscription-sweep.ts`, and admin
+   `setUserPlan()` all **write** `User.plan`.
+
+None can move alone. The instant `session.ts` stops exposing `plan`, the
+gates break. The instant the gates read entitlements, any billing path still
+writing only `User.plan` produces a user whose gate limits disagree with
+what they paid for. So the doc's original "step 2 = auth, step 3 = billing"
+split doesn't survive contact — **step 3's billing work folds into step 2**,
+delivered as two deploys around one migration:
+
+### 2·A — additive, zero behaviour change (own PR, reversible)
+
+- `provisionStoreSpyAccount(tx, { email, passwordHash, name, tosAcceptedAt })`
+  — one function: `cpAccount` + `cpUser` + `subf_`/`subt_` subs + entitlements
+  (the same shape step 1 backfilled). Called by both the signup route and the
+  OAuth adapter's `createUser`.
+- Signup route + a **custom Auth.js adapter** (replacing `@auth/prisma-adapter`)
+  write `control_plane.users` — **and, transitionally, a shadow
+  `store_spy.User` row** (same id; `email` / `passwordHash` / `plan` / `role` /
+  `freeTrialEndsAt` mirrored) so the existing FKs and the still-live
+  `User.plan` readers keep working untouched.
+- `checkout.ts` / `subscription-sweep.ts` / admin `setUserPlan()`:
+  **dual-write** — keep the `User.plan` write, add the equivalent
+  `control_plane` subscription + entitlement mutation.
+- Nothing reads `control_plane` for gating yet. Login, gates, billing behave
+  exactly as today.
+
+### Migration M — the FK swap (the file in this PR)
+
+For `Account`, `AdminPermissionGrant`, `AnalysisUsage`, `Session`,
+`Watchlist`: `ADD` the FK to `control_plane.users(id)` (every row satisfiable
+— backfill + 2·A dual-writes), then `DROP` the FK to `store_spy.User`.
+`UserAdminRole` / `MarketingConsent` gain their FK here too. **Constraint
+names are reused** (`Watchlist_userId_fkey`, …) so step 6's Cp-prefix drop
+needs no FK rename. `down.sql` reverses it.
+
+### 2·B — the cutover (own PR)
+
+- `verify-credentials`, the `jwt` / `session` callbacks, `session.ts`,
+  `types.d.ts`: read `control_plane.users` (+ `store_spy.UserAdminRole` for
+  `role`). **`plan` leaves the JWT.** `jwt-plan-refresh.ts` →
+  `jwt-session-refresh.ts` (existence + revocation only; keep the 60s TTL,
+  `PLAN_CHECK_TTL_MS` → `SESSION_CHECK_TTL_MS`; keep the `role !== "USER"`
+  always-re-read branch per Q2).
+- Gates call `/api/internal/entitlements`; `recordAnalysisUsage()` takes a
+  `quota: number | null` argument instead of `plan`; `plan-limits.ts` /
+  `entitlement-service.ts` deleted.
+- Billing writes drop the `User.plan` half of the dual-write —
+  `control_plane` only.
+- Signup + adapter stop writing the shadow `store_spy.User`.
+- `store_spy.User` now has **no readers and no writers** — the column-home
+  discharge verification (below) runs here, gating step 4.
+
+A `makeUser()` test helper is introduced in 2·A and the 45 fixture files move
+to it across 2·A/2·B — test infrastructure, tracked separately from the
+product diff.
+
+## Q: is there a window where signup or an FK write can fail?
+
+**No.** The shadow `store_spy.User` write in 2·A is the hinge — it keeps the
+old FK satisfiable across the swap, so migration M never has to be co-timed
+with a code deploy.
+
+| phase | signup writes | live FK on `Watchlist.userId` (&c.) | write can fail? |
+|---|---|---|---|
+| after step 1, before 2·A | `store_spy.User` only | `_userId_fkey → store_spy.User` | no |
+| 2·A deployed | `control_plane.users` **+ shadow `store_spy.User`** (same id) | `_userId_fkey → store_spy.User` | no — shadow row satisfies it |
+| migration M running | (same) | briefly **both** `_userId_fkey` and the new one | no — every `userId` has a row in **both** tables |
+| after M, before 2·B | `control_plane.users` + shadow | `_userId_fkey → control_plane.users` | no — cp.users row satisfies it |
+| 2·B deployed | `control_plane.users` only | `_userId_fkey → control_plane.users` | no |
+
+Order is: deploy 2·A → run M → deploy 2·B. M can run any time after 2·A and
+before 2·B; it is not coupled to a deploy instant.
+
+## Q: what happens to in-flight sessions at cutover?
+
+**Nobody is logged out.** Session strategy is JWT signed with `AUTH_SECRET`
+(unchanged in B2). A pre-cutover token carries
+`{ id, plan, role, planCheckedAt, iat }`.
+
+- **`token.id`** is the old `store_spy.User.id`, which step 1's backfill copied
+  **verbatim** into `control_plane.users.id`. The post-cutover `jwt` callback's
+  re-read (`cpUser.findUnique({ where: { id: token.id } })`) resolves — session
+  stays valid.
+- **stale `plan` claim** — the `session` callback stops copying it;
+  `refreshSessionToken` ignores it. It rides along unused until the token
+  expires and re-mints without it.
+- **`role`** — re-read from `store_spy.UserAdminRole` (backfilled). Preserved,
+  including for admins.
+- **`sessionsValidAfter`** — moved to `control_plane.users` (backfilled,
+  including any non-null revocation floor). "Sign out everywhere" still
+  enforced; a token issued before an existing floor is still rejected.
+- **`planCheckedAt` claim** — renamed to `sessionCheckedAt`. Old tokens lack
+  it → treated as stale → **one** forced `control_plane.users` re-read on the
+  session's first post-cutover request (exactly the revalidation we want),
+  then the new claim is written. No user-visible effect.
+- **OAuth sessions** — same: `token.id` resolves, and the custom adapter's
+  `getUserByAccount` (`store_spy.Account` → `userId` → `control_plane.users`)
+  works because `Account.userId` was repointed to the same id.
+
+If a clean-slate logout were ever wanted (it is **not** — no security reason):
+`UPDATE control_plane.users SET sessions_valid_after = now()` at cutover
+invalidates every existing JWT on its next request. B2 does not do this.
+
+## Step 2 verification
+
+- 2·A: full suite green with dual-write + shadow row (no behaviour change).
+- Migration M: `ADD`/`DROP` both directions on a scratch DB with backfilled +
+  shadow rows; a cross-schema `ON DELETE CASCADE` from each child actually
+  cascades; `down.sql` round-trip.
+- 2·B: every auth integration test; a real `next start` browser sign-in
+  (Credentials **and**, if configured, OAuth); a pre-cutover JWT (minted
+  against 2·A) still authorises a request after 2·B is deployed — asserted,
+  not assumed.
+- Column-home discharge: `grep` evidence that no `prisma.user.` /
+  `session.user.plan` / `plan-limits` reader remains, table-by-table against
+  the step-4 gate list.
