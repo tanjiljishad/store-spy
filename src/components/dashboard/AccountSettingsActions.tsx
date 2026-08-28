@@ -34,7 +34,7 @@ export function AccountSettingsActions({ email }: AccountSettingsActionsProps) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `bellwether-account-data-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `store-spy-account-data-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -74,7 +74,7 @@ export function AccountSettingsActions({ email }: AccountSettingsActionsProps) {
       <div className="rounded-lg border border-line bg-surface p-5">
         <h2 className="mb-1 font-mono text-[13px] font-semibold text-paper">Export your data</h2>
         <p className="mb-3 font-mono text-[12.5px] text-muted-dim">
-          Download a copy of everything Bellwether stores about your account (GDPR Art. 15).
+          Download a copy of everything we store about your account (GDPR Art. 15).
         </p>
         <button
           type="button"

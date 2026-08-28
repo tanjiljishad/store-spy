@@ -219,8 +219,8 @@ describe("POST /api/auth/signup", () => {
   // above, which is the "may we email you" checkbox. Both can vary
   // independently.
   describe("signup conversion event recording (marketing/conversion-events.ts)", () => {
-    it("records one SIGNUP MarketingConversionEvent PER server-side vendor (meta, google, tiktok, linkedin, AND x) when the request's own bw-cookie-consent cookie is granted", async () => {
-      const res = await signup(req({ email: "cookie-granted@example.com", password: "correct-password" }, "203.0.113.50", "bw-cookie-consent=granted"));
+    it("records one SIGNUP MarketingConversionEvent PER server-side vendor (meta, google, tiktok, linkedin, AND x) when the request's own store-spy-cookie-consent cookie is granted", async () => {
+      const res = await signup(req({ email: "cookie-granted@example.com", password: "correct-password" }, "203.0.113.50", "store-spy-cookie-consent=granted"));
       expect(res.status).toBe(201);
 
       const user = await prisma.user.findUniqueOrThrow({ where: { email: "cookie-granted@example.com" } });
@@ -233,7 +233,7 @@ describe("POST /api/auth/signup", () => {
     });
 
     it("records nothing when the cookie is denied", async () => {
-      await signup(req({ email: "cookie-denied@example.com", password: "correct-password" }, "203.0.113.51", "bw-cookie-consent=denied"));
+      await signup(req({ email: "cookie-denied@example.com", password: "correct-password" }, "203.0.113.51", "store-spy-cookie-consent=denied"));
       const user = await prisma.user.findUniqueOrThrow({ where: { email: "cookie-denied@example.com" } });
       expect(await prisma.marketingConversionEvent.count({ where: { userId: user.id } })).toBe(0);
     });
@@ -246,7 +246,7 @@ describe("POST /api/auth/signup", () => {
 
     it("is independent of marketingConsent (the email checkbox) — cookie-granted but marketingConsent:false still records every vendor's conversion event", async () => {
       await signup(
-        req({ email: "cookie-yes-email-no@example.com", password: "correct-password", marketingConsent: false }, "203.0.113.53", "bw-cookie-consent=granted"),
+        req({ email: "cookie-yes-email-no@example.com", password: "correct-password", marketingConsent: false }, "203.0.113.53", "store-spy-cookie-consent=granted"),
       );
       const user = await prisma.user.findUniqueOrThrow({ where: { email: "cookie-yes-email-no@example.com" } });
       expect(user.marketingConsent).toBe(false);

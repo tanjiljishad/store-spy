@@ -67,7 +67,7 @@ export default async function StoreIntelligencePage({ params, searchParams }: St
         <p className="mt-3 font-mono text-[13.5px] text-muted">
           {claimLimitReached
             ? "You've used all your free store analyses, so this store can't be added automatically. Upgrade to Basic for unlimited analyses, or free up a slot by choosing your 3 stores."
-            : "This store is in Bellwether’s corpus, but you haven’t analyzed it yet — it doesn’t count against your analysis limit until you do."}
+            : "This store is in our index, but you haven’t analyzed it yet — it doesn’t count against your analysis limit until you do."}
         </p>
         <Link
           href="/"

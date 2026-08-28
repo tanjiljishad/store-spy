@@ -1,5 +1,10 @@
 # Diff Engine — Ecommerce Intelligence Engine
 
+> Product renamed from **Bellwether** to **Store Spy** on 2026-08-28 (parent
+> company remains **Bellwether Intelligence**) — see
+> `docs/store-spy-rebrand-and-control-plane.md`. Historical `docs/milestone-*.md`
+> reports are left as originally written and still say "Bellwether."
+
 The change-detection core. Turns two catalog snapshots into a scored, deduplicated event stream.
 
 ```

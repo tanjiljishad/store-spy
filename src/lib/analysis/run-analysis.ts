@@ -286,7 +286,7 @@ export function classifyCrawlFailure(
       return {
         status: "non_shopify",
         message:
-          "This doesn't appear to be a Shopify store. Bellwether currently analyzes Shopify storefronts only — support for more platforms is on the way.",
+          "This doesn't appear to be a Shopify store. We currently analyze Shopify storefronts only — support for more platforms is on the way.",
       };
     case "blocked":
       return {

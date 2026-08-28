@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 import { verifyEmailVerificationToken } from "@/lib/auth/email-verification-token";
 import { ResendVerificationForm } from "@/components/auth/ResendVerificationForm";
 
-export const metadata = { title: "Confirm your email — Bellwether" };
+export const metadata = { title: "Store Spy — Confirm your email" };
 
 interface VerifyEmailPageProps {
   searchParams: Promise<{ uid?: string; token?: string }>;
@@ -42,7 +42,7 @@ export default async function VerifyEmailPage({ searchParams }: VerifyEmailPageP
       <div className="mx-auto flex min-h-[calc(100vh-62px)] max-w-[560px] flex-col items-center justify-center px-7 py-16 text-center">
         <Link href="/" className="mb-8 flex items-center gap-2.5 font-display text-[17px] font-bold tracking-tight">
           <span className="h-[11px] w-[11px] rounded-sm bg-sig-price shadow-[0_0_0_4px_rgba(255,182,39,0.14)]" />
-          Bellwether
+          Store Spy
         </Link>
         {confirmed ? (
           <>
@@ -83,7 +83,7 @@ export default async function VerifyEmailPage({ searchParams }: VerifyEmailPageP
     <div className="mx-auto flex min-h-[calc(100vh-62px)] max-w-[560px] flex-col items-center justify-center px-7 py-16 text-center">
       <Link href="/" className="mb-8 flex items-center gap-2.5 font-display text-[17px] font-bold tracking-tight">
         <span className="h-[11px] w-[11px] rounded-sm bg-sig-price shadow-[0_0_0_4px_rgba(255,182,39,0.14)]" />
-        Bellwether
+        Store Spy
       </Link>
       <h1 className="mb-2 font-display text-2xl font-bold tracking-tight">Confirm your email</h1>
       <p className="mb-7 font-mono text-[13px] text-muted-dim">

@@ -6,7 +6,7 @@ import { formatRelativeTime } from "@/lib/format-relative-time";
 import { maxActiveMonitoredStores } from "@/lib/entitlements/entitlement-service";
 import { formatLimit } from "@/lib/format-limit";
 
-export const metadata = { title: "Watchlist — Bellwether" };
+export const metadata = { title: "Store Spy — Watchlist" };
 
 export default async function WatchlistPage() {
   let user;

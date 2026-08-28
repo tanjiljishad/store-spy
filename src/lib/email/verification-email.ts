@@ -27,12 +27,12 @@ export async function sendVerificationEmail(baseUrl: string, userId: string, ema
 
   await sendEmail({
     to: email,
-    subject: "Confirm your email — Bellwether",
+    subject: "Store Spy — Confirm your email",
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; color: #1a1a1a;">
         <h1 style="font-size: 20px;">Confirm your email</h1>
         <p style="font-size: 14px; line-height: 1.6;">
-          Click the button below to confirm your email address and unlock your Bellwether dashboard.
+          Click the button below to confirm your email address and unlock your dashboard.
         </p>
         <p style="margin: 28px 0;">
           <a href="${url}" style="background: #FFB627; color: #1A1204; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">
@@ -43,7 +43,7 @@ export async function sendVerificationEmail(baseUrl: string, userId: string, ema
           If the button doesn't work, copy and paste this link into your browser:<br />
           <a href="${url}" style="color: #666;">${url}</a>
         </p>
-        <p style="font-size: 12px; color: #999;">If you didn't create a Bellwether account, you can ignore this email.</p>
+        <p style="font-size: 12px; color: #999;">If you didn't create an account, you can ignore this email.</p>
       </div>
     `,
   });

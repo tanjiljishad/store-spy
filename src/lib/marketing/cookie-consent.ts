@@ -21,7 +21,7 @@
  * signup Route Handler (server, Node runtime), so it must stay free of any
  * client-only React API.
  */
-export const COOKIE_CONSENT_COOKIE_NAME = "bw-cookie-consent";
+export const COOKIE_CONSENT_COOKIE_NAME = "store-spy-cookie-consent";
 export const COOKIE_CONSENT_MAX_AGE_SECONDS = 180 * 24 * 60 * 60; // 180 days
 
 export type CookieConsentState = "granted" | "denied";

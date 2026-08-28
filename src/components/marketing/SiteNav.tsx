@@ -17,7 +17,7 @@ export function SiteNav({ onHome }: SiteNavProps) {
           onClick={onHome}
         >
           <span className="h-[11px] w-[11px] rounded-sm bg-sig-price shadow-[0_0_0_4px_rgba(255,182,39,0.14)]" />
-          Bellwether
+          Store Spy
         </button>
         <div className="hidden gap-7 font-mono text-sm text-muted sm:flex">
           <button className="transition hover:text-paper" onClick={onHome}>

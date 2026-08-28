@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { MarketingPixels } from "@/components/marketing/MarketingPixels";
 
-export const metadata = { title: "Privacy Policy — Bellwether" };
+export const metadata = { title: "Privacy Policy — Bellwether Intelligence" };
 
 /**
  * Milestone 12 §4.1: exists so signup's ToS checkbox and the cookie
@@ -15,7 +15,7 @@ export default function PrivacyPage() {
     <div className="mx-auto max-w-[720px] px-7 py-16">
       <Link href="/" className="mb-8 inline-flex items-center gap-2.5 font-display text-[17px] font-bold tracking-tight">
         <span className="h-[11px] w-[11px] rounded-sm bg-sig-price shadow-[0_0_0_4px_rgba(255,182,39,0.14)]" />
-        Bellwether
+        Bellwether Intelligence
       </Link>
       <h1 className="mb-2 font-display text-2xl font-bold tracking-tight">Privacy Policy</h1>
       <p className="mb-8 rounded-md border border-sig-price/35 bg-surface px-4 py-3 font-mono text-[12.5px] text-sig-price">
@@ -23,6 +23,10 @@ export default function PrivacyPage() {
         the signup checkbox and cookie banner have a real page to link to.
       </p>
       <div className="flex flex-col gap-4 font-mono text-[13px] leading-relaxed text-muted">
+        <p>
+          Bellwether Intelligence (&quot;we&quot;, &quot;us&quot;) operates Store Spy (the
+          &quot;Service&quot;).
+        </p>
         <p>We collect the account information you provide (email, password) and the stores you choose to analyze or monitor.</p>
         <p>
           Marketing emails are sent only if you opt in separately at signup, and you can unsubscribe at any

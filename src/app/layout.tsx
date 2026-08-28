@@ -26,7 +26,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Bellwether — Analyze any Shopify store",
+  title: "Store Spy — Analyze any Shopify store",
   description:
     "Paste a Shopify store URL and get real, verified competitive intelligence: platform, products, theme, and more.",
 };

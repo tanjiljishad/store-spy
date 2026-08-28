@@ -7,7 +7,7 @@ import { formatRelativeTime } from "@/lib/format-relative-time";
 import { formatLimit } from "@/lib/format-limit";
 import { planLabel } from "@/lib/plan-label";
 
-export const metadata = { title: "Dashboard — Bellwether" };
+export const metadata = { title: "Store Spy — Dashboard" };
 
 export default async function DashboardPage() {
   let user;

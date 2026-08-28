@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { verifyUnsubscribeToken } from "@/lib/marketing/unsubscribe-token";
 import { revokeMarketingConsent } from "@/lib/marketing/consent";
 
-export const metadata = { title: "Unsubscribe — Bellwether" };
+export const metadata = { title: "Store Spy — Unsubscribe" };
 
 interface UnsubscribePageProps {
   searchParams: Promise<{ uid?: string; token?: string }>;
@@ -36,13 +36,13 @@ export default async function UnsubscribePage({ searchParams }: UnsubscribePageP
     <div className="mx-auto flex min-h-[calc(100vh-62px)] max-w-[560px] flex-col items-center justify-center px-7 py-16 text-center">
       <Link href="/" className="mb-8 flex items-center gap-2.5 font-display text-[17px] font-bold tracking-tight">
         <span className="h-[11px] w-[11px] rounded-sm bg-sig-price shadow-[0_0_0_4px_rgba(255,182,39,0.14)]" />
-        Bellwether
+        Store Spy
       </Link>
       {valid ? (
         <>
           <h1 className="mb-2 font-display text-2xl font-bold tracking-tight">You&rsquo;re unsubscribed</h1>
           <p className="font-mono text-[13px] text-muted-dim">
-            You will no longer receive marketing emails from Bellwether. You can still sign in and use your
+            You will no longer receive marketing emails from us. You can still sign in and use your
             account normally — this only affects marketing email.
           </p>
         </>

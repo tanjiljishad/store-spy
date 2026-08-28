@@ -20,7 +20,7 @@
 
 services:
   - type: web
-    name: bellwether-web
+    name: store-spy-web
     runtime: node
     plan: starter
     region: oregon
@@ -123,7 +123,7 @@ services:
         sync: false
 
   - type: worker
-    name: bellwether-worker
+    name: store-spy-worker
     runtime: node
     plan: starter
     region: oregon

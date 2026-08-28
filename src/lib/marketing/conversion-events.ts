@@ -16,7 +16,7 @@ import { dispatchXConversionEvent, isXConversionsApiConfigured } from "./pixels/
  *   - dispatchPendingConversionEvents() — called from the worker tick,
  *     the ONLY place an actual vendor API call is ever attempted.
  *
- * Gated on COOKIE consent (`bw-cookie-consent`), not `User.marketingConsent`
+ * Gated on COOKIE consent (`store-spy-cookie-consent`), not `User.marketingConsent`
  * — these are two legally distinct GDPR/ePrivacy consents. Reporting a
  * conversion to an ad platform is a tracking/attribution activity, which is
  * what cookie/tracking consent governs; `marketingConsent` is specifically

@@ -23,7 +23,7 @@ export function DashboardNav({ email }: DashboardNavProps) {
         <div className="flex items-center gap-8">
           <Link href="/" className="flex items-center gap-2.5 font-display text-[17px] font-bold tracking-tight">
             <span className="h-[11px] w-[11px] rounded-sm bg-sig-price shadow-[0_0_0_4px_rgba(255,182,39,0.14)]" />
-            Bellwether
+            Store Spy
           </Link>
           <div className="hidden gap-6 font-mono text-sm sm:flex">
             {LINKS.map((link) => (

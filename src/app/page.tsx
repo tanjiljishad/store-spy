@@ -39,7 +39,7 @@ export default function HomePage() {
             Understand any Shopify store <em className="not-italic text-sig-price">in seconds</em>
           </h1>
           <p className="mx-auto mt-4 max-w-[58ch] text-base text-muted sm:text-[16.5px]">
-            Paste a competitor&apos;s URL. Bellwether reads the store&apos;s publicly observable signals — products,
+            Paste a competitor&apos;s URL. We read the store&apos;s publicly observable signals — products,
             theme, apps, pricing, activity — and turns them into intelligence you&apos;d otherwise spend hours
             assembling by hand.
           </p>

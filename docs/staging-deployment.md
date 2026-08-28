@@ -35,10 +35,10 @@ report's Section 9/19.
 INTERNET
    |
    v
-Render Web Service (bellwether-web)  --- Neon Postgres (managed, pooled)
+Render Web Service (store-spy-web)  --- Neon Postgres (managed, pooled)
    Next.js, `npm run start`               ^
                                            |
-Render Worker Service (bellwether-worker) -
+Render Worker Service (store-spy-worker) -
    `npm run worker`
 ```
 
