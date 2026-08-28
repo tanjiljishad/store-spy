@@ -153,6 +153,15 @@ nothing and makes the multi-product assumption concrete.
 - Store Spy's own schema keeps only its domain data, joined by `user_id` or
   `account_id`. It must not retain its own users table.
 - Session issuance and validation move to the control plane.
+- **Drop the `Cp` model-name prefix.** B1 named the Prisma models `CpAccount`,
+  `CpUser`, `CpSubscription`, `CpEntitlement`, `CpProduct`, `CpAuditLog`
+  (and left `Staff`/`StaffRole` unprefixed) purely to avoid colliding with
+  Store Spy's own `Account`/`User`/`Subscription` models in the same
+  `schema.prisma`. B2 deletes those Store Spy models, so the collision is
+  gone — rename `Cp*` back to the plain names in the same change. The
+  `Cp` prefix is transitional scaffolding, not a naming convention; it must
+  not survive B2. (Tables and columns are already unprefixed snake_case —
+  this is only the Prisma model identifiers.)
 
 ## B3. Entitlements service
 
@@ -160,17 +169,39 @@ Expose a single internal endpoint, something like:
 
 ```
 GET /internal/entitlements?account_id=<id>&feature_key=<key>
-→ { allowed: bool, quota: int|null, used: int, reason: string }
+→ { allowed: bool, quota: int|null, reason: string }
 ```
 
-**Store Spy must call this and nothing else.** It must never query
-`subscriptions` directly, never read the payment provider's API, and never
-infer access from a plan name string. Every feature gate and every quota check
-goes through this endpoint.
+**Store Spy must call this and nothing else** to decide *entitlement*: it must
+never query `subscriptions` directly, never read the payment provider's API,
+and never infer access from a plan name string.
+
+**Division of responsibility (revised after B1 review).** The control plane
+owns the *ceiling and the right to it*; the consuming product owns the
+*current count*:
+
+- The endpoint returns `quota` (the ceiling, `null` = boolean/unlimited),
+  `allowed` (derived **only** from subscription status and trial expiry),
+  and `reason` ∈ `{ "ok", "no_entitlement", "subscription_inactive",
+  "trial_expired" }`.
+- The endpoint does **not** return `used` and does **not** return a
+  `quota_exceeded` reason. It cannot: Store Spy's two real quotas are a
+  rolling-24h window (`store_spy.analysis.run`) and a live COUNT of ACTIVE
+  watches (`store_spy.monitoring.slots`), neither of which is a cumulative
+  integer the control plane can compute.
+- Store Spy keeps the `used`-vs-`quota` comparison, under the lock its write
+  path already holds — `recordAnalysisUsage()`'s `pg_advisory_xact_lock`,
+  `startMonitoring()`'s transactional COUNT. A `false` from that check is
+  Store Spy's own `LIMIT_REACHED`, not the control plane's.
+- The `entitlements.used` column stays for a *future* genuinely cumulative
+  quota the control plane could own end to end (e.g. "N exports ever"). It
+  is unused today.
 
 Replace every existing plan or tier check in Store Spy with an entitlements
-call. List the ones you find and what feature key you mapped each to — I want
-to review that mapping, since those keys become the vocabulary for pricing.
+call plus (where there is a numeric quota) its own count comparison. The
+mapping of each existing check to a `feature_key` was reviewed and approved
+separately — `store_spy.analysis.run`, `store_spy.monitoring.slots`,
+`store_spy.intelligence.advanced`.
 
 ## B4. Deployment readiness
 

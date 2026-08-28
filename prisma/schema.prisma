@@ -8,12 +8,20 @@
 //   4. Every write path is idempotent, keyed on (crawlId, dedupeKey).
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  // multiSchema is still a preview feature on Prisma 5.x (GA in 6.0). Needed
+  // so `store_spy` (this product's own data) and `control_plane` (the shared
+  // identity/billing/entitlements layer, see Task B) can live as two schemas
+  // in one Postgres instance.
+  previewFeatures = ["multiSchema"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Order is cosmetic only. Every model and enum now carries an explicit
+  // @@schema(...) — nothing lands in `public` any more.
+  schemas  = ["control_plane", "store_spy"]
 }
 
 // ---------------------------------------------------------------------------
@@ -27,16 +35,20 @@ enum Platform {
   MAGENTO
   CUSTOM
   UNKNOWN
+
+  @@schema("store_spy")
 }
 
 /// Crawl frequency tier. Driven by user attention, not by store size.
 enum CrawlTier {
-  HOT // on a paid user's watchlist        -> every 6-12h
+  HOT // any store with >=1 ACTIVE watch    -> every 6-12h
   WARM // searched within last 30 days      -> daily
   COOL // searched at least once, ever      -> weekly
   COLD // corpus-seeded, never searched     -> monthly
   DORMANT // 3+ crawls with zero change        -> quarterly
   DISABLED // dead domain / blocked / opted out  -> never
+
+  @@schema("store_spy")
 }
 
 model Store {
@@ -53,22 +65,22 @@ model Store {
 
   /// True once we have completed one successful full crawl.
   /// Until then, diffing emits NO alertable events (see engine.ts baseline guard).
-  baselinedAt DateTime?
+  baselinedAt          DateTime?
   /// Same role as baselinedAt, for the independent marketing-intelligence
   /// pipeline: null until the first successful MarketingCollectionRun, so
   /// every ad found on that first check is persisted but does not fire a
   /// flood of AD_DETECTED events for advertising that already existed.
   marketingBaselinedAt DateTime?
 
-  firstSeenAt   DateTime  @default(now())
-  lastCrawledAt DateTime?
-  lastChangedAt DateTime?
-  nextCrawlAt   DateTime  @default(now())
+  firstSeenAt               DateTime  @default(now())
+  lastCrawledAt             DateTime?
+  lastChangedAt             DateTime?
+  nextCrawlAt               DateTime  @default(now())
   /// Same claim mechanics as nextCrawlAt (FOR UPDATE SKIP LOCKED in
   /// marketing/scheduler.ts) but on its own, much slower cadence — this
   /// drives a paid external vendor, so it must never be conflated with or
   /// derived from the free Shopify crawl schedule.
-  nextMarketingCollectionAt DateTime @default(now())
+  nextMarketingCollectionAt DateTime  @default(now())
 
   /// Consecutive crawls where catalogHash was unchanged. Drives DORMANT demotion.
   unchangedStreak Int @default(0)
@@ -82,7 +94,7 @@ model Store {
   /// Earliest Wayback Machine snapshot date found for this domain's
   /// /products.json, looked up alongside domainRegisteredAt. Null until
   /// attempted or found nothing.
-  firstArchivedAt DateTime?
+  firstArchivedAt    DateTime?
   /// Set the first time the enrichment lookups above are attempted, whether
   /// or not they found anything — distinguishes "never tried" (null) from
   /// "tried, found nothing" (set, fields above still null), so a store whose
@@ -102,6 +114,7 @@ model Store {
 
   @@index([tier, nextCrawlAt])
   @@index([platform])
+  @@schema("store_spy")
 }
 
 /// Rolling behavioural stats. Used by the significance scorer for the RARITY term:
@@ -123,6 +136,8 @@ model StoreStats {
   productCount     Int  @default(0)
 
   computedAt DateTime @default(now())
+
+  @@schema("store_spy")
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +150,8 @@ enum CrawlStatus {
   PARTIAL // some pages failed — additions are trusted, removals are NOT
   FAILED
   BLOCKED
+
+  @@schema("store_spy")
 }
 
 /// MANUAL: a user submitted a URL (POST /api/analyze). SCHEDULED: the
@@ -143,6 +160,8 @@ enum CrawlStatus {
 enum CrawlTrigger {
   MANUAL
   SCHEDULED
+
+  @@schema("store_spy")
 }
 
 model Crawl {
@@ -175,6 +194,7 @@ model Crawl {
   reviewObservations StorefrontReviewObservation[]
 
   @@index([storeId, startedAt(sort: Desc)])
+  @@schema("store_spy")
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +205,8 @@ enum ProductStatus {
   ACTIVE
   MISSING // absent from last crawl(s), not yet confirmed gone
   REMOVED // confirmed after N consecutive absences
+
+  @@schema("store_spy")
 }
 
 model Product {
@@ -227,6 +249,7 @@ model Product {
   @@unique([storeId, externalId])
   @@index([storeId, status])
   @@index([imageHash])
+  @@schema("store_spy")
 }
 
 /// Append-only. One row per product PER CHANGE — not per crawl.
@@ -247,6 +270,7 @@ model ProductStateSnapshot {
   bestsellerRank    Int?
 
   @@index([productId, capturedAt(sort: Desc)])
+  @@schema("store_spy")
 }
 
 /// Bounded, per-product review-count observation from public storefront
@@ -270,15 +294,15 @@ model StorefrontReviewObservation {
   /// explicit, honest "not observed," never coerced to 0. A real 0 (a
   /// product whose page genuinely emits a zero-review AggregateRating) is a
   /// legitimate, distinct value from null.
-  reviewCount Int?
-  ratingValue Float?
+  reviewCount     Int?
+  ratingValue     Float?
   /// Free text, not an enum — mirrors AdObservation.source: a future
   /// non-JSON-LD storefront source shouldn't require a migration.
-  source      String  @default("storefront_jsonld")
+  source          String  @default("storefront_jsonld")
   /// Review app detected on the store at sampling time, if any (e.g.
   /// "okendo") — sampling/attribution context only, never proof this
   /// specific count actually came from that provider (see review-infrastructure.ts).
-  provider    String?
+  provider        String?
   /// True when 2+ products sampled in the SAME crawl reported the exact same
   /// non-null reviewCount — a real, observed signal (product-group/variant
   /// sharing, confirmed live in Milestone 9 Sub-phase D) that this count may
@@ -300,6 +324,7 @@ model StorefrontReviewObservation {
   /// every store/crawl, not with any bounded sample size. Confirmed fixed
   /// by EXPLAIN ANALYZE after adding this index — see the Sub-phase F report.
   @@index([crawlId])
+  @@schema("store_spy")
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +345,8 @@ enum StoreEntityKind {
   /// Reserved — not yet populated. emailPlatform is a scalar ("which ESP, if
   /// any"), not set membership, so it doesn't fit diffEntitySet() as-is.
   EMAIL_PLATFORM
+
+  @@schema("store_spy")
 }
 
 model StoreEntity {
@@ -344,6 +371,7 @@ model StoreEntity {
   @@index([storeId, kind, status])
   /// Reverse lookup across the whole corpus: "which stores use Zipify OCU".
   @@index([kind, key])
+  @@schema("store_spy")
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +406,8 @@ enum EventType {
   AD_REMOVED
   AD_CHANGED
   PRODUCT_AD_MATCHED
+
+  @@schema("store_spy")
 }
 
 enum EntityType {
@@ -387,6 +417,8 @@ enum EntityType {
   COLLECTION
   TECH
   AD
+
+  @@schema("store_spy")
 }
 
 model Event {
@@ -434,6 +466,7 @@ model Event {
   /// (storeId, occurredAt) prefix to work with and must filter entityKey
   /// out of every row in the time range, not just this product's rows.
   @@index([storeId, entityType, entityKey, occurredAt(sort: Desc)])
+  @@schema("store_spy")
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +489,8 @@ enum PlanTier {
   /// no live data).
   BASIC
   BUSINESS
+
+  @@schema("store_spy")
 }
 
 /// Coarse admin roles — fine-grained access is Permission (src/lib/admin/roles.ts),
@@ -478,19 +513,21 @@ enum Role {
   MARKETING_ADMIN
   MANAGER
   SUPER_ADMIN
+
+  @@schema("store_spy")
 }
 
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  emailVerified DateTime?
-  name          String?
-  image         String?
+  id                     String    @id @default(cuid())
+  email                  String    @unique
+  emailVerified          DateTime?
+  name                   String?
+  image                  String?
   /// Null for OAuth-only users. Set only via the Credentials provider's
   /// signup path, hashed with bcrypt — never stored or logged raw.
-  passwordHash  String?
-  plan          PlanTier  @default(FREE)
-  role          Role      @default(USER)
+  passwordHash           String?
+  plan                   PlanTier  @default(FREE)
+  role                   Role      @default(USER)
   /// A JWT issued before this timestamp is rejected by the `jwt` callback
   /// (see auth.ts) even if it hasn't expired — the real "sign out
   /// everywhere" / compromised-account kill switch that JWT sessions
@@ -498,7 +535,7 @@ model User {
   /// auth.ts's own doc comment for why). Null means no floor: every
   /// existing token is still valid. Set via POST
   /// /api/admin/users/[id]/revoke-sessions in Phase 2.
-  sessionsValidAfter DateTime?
+  sessionsValidAfter     DateTime?
   /// Milestone 12 §1.4, per D1: anchored to account creation, never to first
   /// watch or first analysis — set once at insert time via a DB-level
   /// default (`now() + 30 days`) so every creation path (signup route,
@@ -520,7 +557,7 @@ model User {
   /// landed 6 hours off from `createdAt + 30 days`; wrapping the whole
   /// expression in `AT TIME ZONE 'UTC'` fixed it, verified against the same
   /// session.
-  freeTrialEndsAt DateTime? @default(dbgenerated("((now() + interval '30 days') AT TIME ZONE 'UTC')"))
+  freeTrialEndsAt        DateTime? @default(dbgenerated("((now() + interval '30 days') AT TIME ZONE 'UTC')"))
   /// Milestone 12 §4.1: a SEPARATE, unticked-by-default opt-in — never
   /// bundled into ToS acceptance (bundled consent is not valid consent
   /// under GDPR/PECR). Defaults to `false` for every creation path,
@@ -561,20 +598,21 @@ model User {
   /// existed — fabricating a consent timestamp that was never actually
   /// given would defeat the entire point; those accounts see the
   /// interstitial once, the same as any other un-consented account.
-  tosAcceptedAt DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  tosAcceptedAt          DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
-  accounts      Account[]
-  sessions      Session[]
-  watchlists    Watchlist[]
-  analysisUsage AnalysisUsage[]
+  accounts         Account[]
+  sessions         Session[]
+  watchlists       Watchlist[]
+  analysisUsage    AnalysisUsage[]
   /// Grants held BY this user — see AdminPermissionGrant's own doc comment
   /// for why grantedByUserId (the OTHER direction) is deliberately not a
   /// second relation here.
   permissionGrants AdminPermissionGrant[]
 
   @@index([role])
+  @@schema("store_spy")
 }
 
 /// Append-only, in the same transaction as the change it records (see
@@ -615,6 +653,7 @@ model AdminAuditLog {
 
   @@index([actorId, createdAt])
   @@index([targetType, targetId])
+  @@schema("store_spy")
 }
 
 /// Milestone 12 §2.1: per-employee permission grants layered ON TOP of the
@@ -658,17 +697,18 @@ model AdminAuditLog {
 /// Prisma would then try to manage a plain (non-partial) constraint that
 /// doesn't match what's actually in the database.
 model AdminPermissionGrant {
-  id               String    @id @default(cuid())
-  userId           String
-  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  permission       String
-  grantedByUserId  String
-  grantedAt        DateTime  @default(now())
-  expiresAt        DateTime?
-  revokedAt        DateTime?
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission      String
+  grantedByUserId String
+  grantedAt       DateTime  @default(now())
+  expiresAt       DateTime?
+  revokedAt       DateTime?
 
   @@index([userId, permission])
   @@index([expiresAt])
+  @@schema("store_spy")
 }
 
 /// One row per credentials-login attempt, success or failure — the durable,
@@ -692,6 +732,7 @@ model LoginAttempt {
 
   @@index([emailNormalized, createdAt])
   @@index([ipKey, createdAt])
+  @@schema("store_spy")
 }
 
 /// One row per linked OAuth identity (Google, Facebook, ...). A single User
@@ -715,6 +756,7 @@ model Account {
 
   @@unique([provider, providerAccountId])
   @@index([userId])
+  @@schema("store_spy")
 }
 
 /// DB-backed sessions (not JWT) — chosen so a session can be revoked
@@ -726,6 +768,8 @@ model Session {
   userId       String
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expires      DateTime
+
+  @@schema("store_spy")
 }
 
 model VerificationToken {
@@ -734,12 +778,15 @@ model VerificationToken {
   expires    DateTime
 
   @@unique([identifier, token])
+  @@schema("store_spy")
 }
 
 enum WatchStatus {
   ACTIVE
   EXPIRED
   REMOVED
+
+  @@schema("store_spy")
 }
 
 /// The per-user monitoring relationship (spec: "StoreWatch"). Deliberately
@@ -784,6 +831,7 @@ model Watchlist {
   @@index([storeId])
   @@index([userId, monitoringStatus])
   @@index([monitoringStatus, monitoringExpiresAt])
+  @@schema("store_spy")
 }
 
 /// Milestone 12 §1.2: the server-side usage ledger for the rolling
@@ -816,6 +864,7 @@ model AnalysisUsage {
   /// needed so hasAnalyzedStore()'s EXISTS query and the D2 same-store/
   /// same-window dedup check inside recordAnalysisUsage() stay index-backed.
   @@index([userId, storeId])
+  @@schema("store_spy")
 }
 
 /// Milestone 12 §1.3: the DB-backed ledger behind the anonymous 3-per-24h
@@ -827,8 +876,8 @@ model AnalysisUsage {
 /// x-forwarded-for prefix. Also backs the global hourly circuit breaker
 /// (ANONYMOUS_CRAWL_HOURLY_CEILING) via a count with no ipKey filter.
 model AnonymousAnalysis {
-  id    String @id @default(cuid())
-  ipKey String
+  id     String @id @default(cuid())
+  ipKey  String
   /// Canonicalized domain the probe targeted — informational only (abuse
   /// investigation, admin visibility). Deliberately not a Store foreign
   /// key: an anonymous probe never creates a Store row (Milestone 11 fix
@@ -841,6 +890,7 @@ model AnonymousAnalysis {
   @@index([ipKey, createdAt])
   /// The circuit breaker's own query shape — global count in the last hour, no ipKey filter.
   @@index([createdAt])
+  @@schema("store_spy")
 }
 
 // ---------------------------------------------------------------------------
@@ -858,6 +908,8 @@ model AnonymousAnalysis {
 
 enum AdPlatform {
   GOOGLE
+
+  @@schema("store_spy")
 }
 
 /// Outcome of one collection attempt against the vendor. Never conflated with
@@ -866,6 +918,8 @@ enum AdPlatform {
 enum MarketingCollectionOutcome {
   SUCCESS
   UNAVAILABLE
+
+  @@schema("store_spy")
 }
 
 /// One row per collection attempt, successful or not. Exists specifically so
@@ -891,6 +945,7 @@ model MarketingCollectionRun {
   vendorRequestCount Int  @default(0)
 
   @@index([storeId, platform, startedAt(sort: Desc)])
+  @@schema("store_spy")
 }
 
 /// ACTIVE_EVIDENCE: the most recent successful check still returned this ad.
@@ -901,6 +956,8 @@ model MarketingCollectionRun {
 enum AdObservationStatus {
   ACTIVE_EVIDENCE
   HISTORICAL
+
+  @@schema("store_spy")
 }
 
 /// How matchedProduct was derived. Deterministic only — no AI/embeddings/
@@ -911,12 +968,16 @@ enum AdObservationStatus {
 /// use case. Such an ad is simply left unmatched.)
 enum MatchMethod {
   EXACT_PRODUCT_URL
+
+  @@schema("store_spy")
 }
 
 enum MatchConfidence {
   HIGH
   MEDIUM
   LOW
+
+  @@schema("store_spy")
 }
 
 /// One row per distinct ad, identified by the vendor's own stable
@@ -964,6 +1025,7 @@ model AdObservation {
   @@unique([storeId, platform, externalAdId])
   @@index([storeId, status])
   @@index([matchedProductId])
+  @@schema("store_spy")
 }
 
 // ---------------------------------------------------------------------------
@@ -978,11 +1040,15 @@ model AdObservation {
 enum DiscountType {
   PERCENT
   FIXED
+
+  @@schema("store_spy")
 }
 
 enum PromoStatus {
   ACTIVE
   DISABLED
+
+  @@schema("store_spy")
 }
 
 enum CheckoutStatus {
@@ -990,12 +1056,16 @@ enum CheckoutStatus {
   COMPLETED
   EXPIRED
   FAILED
+
+  @@schema("store_spy")
 }
 
 enum SubscriptionSource {
   PROMO
   PROVIDER
   MANUAL
+
+  @@schema("store_spy")
 }
 
 /// ACTIVE until swept past its own expiresAt (or manually superseded).
@@ -1006,6 +1076,8 @@ enum SubscriptionSource {
 enum SubscriptionStatus {
   ACTIVE
   EXPIRED
+
+  @@schema("store_spy")
 }
 
 /// Immutable after creation — see promo.ts's own doc comment on why a
@@ -1013,22 +1085,22 @@ enum SubscriptionStatus {
 /// terms that never changed out from under it. To change terms, disable and
 /// mint a new code.
 model PromoCode {
-  id     String       @id @default(cuid())
+  id               String       @id @default(cuid())
   /// Normalized (uppercase, no whitespace/dashes) — see promo-code.ts. The
   /// unique index is on this normalized form so "abc-def" and "ABCDEF"
   /// can never both exist as distinct rows.
-  code   String       @unique
-  discountType  DiscountType
+  code             String       @unique
+  discountType     DiscountType
   /// PERCENT: integer 1-100. FIXED: integer cents, >= 1.
-  discountValue Int
+  discountValue    Int
   /// Null means valid against any plan.
-  appliesToPlan PlanTier?
+  appliesToPlan    PlanTier?
   /// Null means unlimited total redemptions.
-  maxRedemptions Int?
-  perUserLimit   Int    @default(1)
-  validFrom  DateTime
-  validUntil DateTime?
-  status     PromoStatus @default(ACTIVE)
+  maxRedemptions   Int?
+  perUserLimit     Int          @default(1)
+  validFrom        DateTime
+  validUntil       DateTime?
+  status           PromoStatus  @default(ACTIVE)
   /// Set only for a promo minted for one specific person — see promo.ts's
   /// not_assigned_to_you handling (masked as not_found at the route layer).
   assignedToUserId String?
@@ -1039,31 +1111,33 @@ model PromoCode {
   /// choose explicitly (see the admin promo-creation route), because a
   /// promo that grants a plan forever by accident is a real revenue leak,
   /// not a convenience.
-  durationDays Int?
-  createdAt DateTime @default(now())
+  durationDays     Int?
+  createdAt        DateTime     @default(now())
 
   redemptions PromoRedemption[]
 
   @@index([status])
   @@index([assignedToUserId])
+  @@schema("store_spy")
 }
 
 /// One row per successful redemption. Append-only — the whole point of
 /// keeping PromoCode immutable is that this row's recorded amounts can
 /// always be reconciled against it later.
 model PromoRedemption {
-  id            String   @id @default(cuid())
-  promoCodeId   String
-  promoCode     PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
-  userId        String
-  checkoutId    String?
+  id             String    @id @default(cuid())
+  promoCodeId    String
+  promoCode      PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  userId         String
+  checkoutId     String?
   listPriceCents Int
   discountCents  Int
   finalCents     Int
-  createdAt DateTime @default(now())
+  createdAt      DateTime  @default(now())
 
   @@unique([promoCodeId, userId])
   @@index([promoCodeId])
+  @@schema("store_spy")
 }
 
 model Checkout {
@@ -1081,6 +1155,7 @@ model Checkout {
 
   @@index([userId])
   @@index([status, createdAt])
+  @@schema("store_spy")
 }
 
 /// The billing-relationship record a promo grant (or, later, a real
@@ -1102,6 +1177,7 @@ model Subscription {
 
   @@index([userId])
   @@index([status, expiresAt])
+  @@schema("store_spy")
 }
 
 // ---------------------------------------------------------------------------
@@ -1150,6 +1226,7 @@ model MetricSnapshot {
   /// The dashboard's own read shape: "latest value(s) for this metric,
   /// most recent window first" — see analytics/read.ts.
   @@index([metricKey, dimension, windowEnd(sort: Desc)])
+  @@schema("store_spy")
 }
 
 // ---------------------------------------------------------------------------
@@ -1165,6 +1242,8 @@ model MetricSnapshot {
 
 enum MarketingConversionEventType {
   SIGNUP
+
+  @@schema("store_spy")
 }
 
 /// PENDING -> DISPATCHED (success) or FAILED (real vendor error, retriable)
@@ -1178,6 +1257,8 @@ enum MarketingConversionDispatchStatus {
   DISPATCHED
   SKIPPED_NO_CREDENTIAL
   FAILED
+
+  @@schema("store_spy")
 }
 
 /// One row per (event, vendor) — a signup with two vendors configured
@@ -1201,4 +1282,234 @@ model MarketingConversionEvent {
   /// The worker's own claim query shape — "give me what's still due."
   @@index([dispatchStatus, occurredAt])
   @@index([userId])
+  @@schema("store_spy")
+}
+
+// ===========================================================================
+// CONTROL PLANE  (schema: control_plane)
+//
+// The shared identity / billing / entitlements layer, per
+// docs/store-spy-rebrand-and-control-plane.md Task B. A customer who buys
+// both Store Spy and the forthcoming Find Suppliers is ONE account here, not
+// two. This block is structure only — B1 creates the tables and seeds
+// `products`; B2 migrates Store Spy's users into `control_plane.users` and
+// moves session issuance. Nothing in src/ reads these tables yet except the
+// internal entitlements endpoint (B3).
+//
+// Four rules encoded here, from the task doc — do not "simplify" them away:
+//   1. `Staff` and `CpUser` are separate tables, never merged. No is_admin
+//      flag on users. Employees and customers have different lifecycles and
+//      blast radius.
+//   2. `Account` owns subscriptions, not `CpUser`. One-user accounts today;
+//      team seats later need no rewrite.
+//   3. `isSuperadmin` is a column on `Staff`, never a row in `StaffRole` —
+//      it cannot be granted through the ordinary role-assignment path.
+//   4. `StaffRole` is scoped per product, so a marketing hire can get
+//      Find Suppliers access without Store Spy customer data.
+//
+// Prisma model names carry a `Cp` prefix only to avoid colliding with the
+// store_spy models (`Account`, `User`, `Subscription`, ... already exist).
+// The tables and columns themselves are plain snake_case, matching the
+// task doc's B1 spec, since the Find Suppliers codebase and support tooling
+// will query them directly by name.
+// ===========================================================================
+
+/// A billing customer. Owns subscriptions and one-or-more users. Created
+/// one-per-signup by Store Spy today (B2); team seats are a later addition
+/// that needs no schema change here.
+model CpAccount {
+  id                 String   @id @default(cuid())
+  /// The address invoices/receipts go to. Not necessarily any user's login
+  /// email — deliberately separate so changing a login never silently
+  /// redirects billing mail.
+  billingEmail       String   @map("billing_email")
+  /// The payment provider's own customer handle (Polar/Paddle/etc.), once a
+  /// provider exists. Null until then — see billing/checkout.ts's PROVIDER
+  /// SEAM. Unique when present so a provider customer maps to exactly one
+  /// account.
+  providerCustomerId String?  @unique @map("provider_customer_id")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  users         CpUser[]
+  subscriptions CpSubscription[]
+
+  @@map("accounts")
+  @@schema("control_plane")
+}
+
+/// OWNER is the account's billing/admin contact; MEMBER is a plain seat.
+/// Store Spy creates every account with exactly one OWNER today.
+enum CpAccountRole {
+  OWNER
+  MEMBER
+
+  @@map("account_role")
+  @@schema("control_plane")
+}
+
+/// A customer login. Belongs to exactly one account. This is where Store
+/// Spy's `User` rows move in B2 — at which point store_spy keeps only its
+/// domain data, joined by a `control_plane.users.id`.
+model CpUser {
+  id           String        @id @default(cuid())
+  accountId    String        @map("account_id")
+  account      CpAccount     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  email        String        @unique
+  /// Null for OAuth-only users, same as store_spy's User.passwordHash.
+  passwordHash String?       @map("password_hash")
+  accountRole  CpAccountRole @default(OWNER) @map("account_role")
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  @@index([accountId])
+  @@map("users")
+  @@schema("control_plane")
+}
+
+/// The product catalogue. Seeded in this migration with `store-spy` and
+/// `find-suppliers` (the second row costs nothing and makes the
+/// multi-product assumption concrete — the task doc's own instruction).
+model CpProduct {
+  id   String @id @default(cuid())
+  slug String @unique
+  name String
+
+  subscriptions CpSubscription[]
+  staffRoles    StaffRole[]
+
+  @@map("products")
+  @@schema("control_plane")
+}
+
+/// TRIALING is Store Spy's 30-day free monitoring window modelled as a real
+/// subscription (period_end = signup + 30d) rather than a `User` column —
+/// see the freeTrialEndsAt inventory in the B1 hand-off. ACTIVE is a paid
+/// or promo-granted plan. The rest are provider-driven lifecycle states
+/// that only start being written once a payment provider is wired.
+enum CpSubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+
+  @@map("subscription_status")
+  @@schema("control_plane")
+}
+
+/// One row per (account, product) billing relationship. An account may
+/// accumulate several over time for the same product (an expired trial, then
+/// a paid plan) — the entitlements endpoint picks the current one
+/// (status TRIALING/ACTIVE, latest period_end), so there is deliberately no
+/// unique on (account_id, product_id).
+model CpSubscription {
+  id          String               @id @default(cuid())
+  accountId   String               @map("account_id")
+  account     CpAccount            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  productId   String               @map("product_id")
+  product     CpProduct            @relation(fields: [productId], references: [id])
+  status      CpSubscriptionStatus
+  /// Null = perpetual (a paid plan with no fixed end). A TRIALING row always
+  /// has one. Same NULL-means-never-expire convention as store_spy's
+  /// Subscription.expiresAt and Watchlist.monitoringExpiresAt.
+  periodEnd   DateTime?            @map("period_end")
+  /// The provider's subscription handle, once one exists. Null until then.
+  providerRef String?              @map("provider_ref")
+  createdAt   DateTime             @default(now()) @map("created_at")
+
+  entitlements CpEntitlement[]
+
+  @@index([accountId, productId, status])
+  @@map("subscriptions")
+  @@schema("control_plane")
+}
+
+/// What a subscription grants. `feature_key` is the permanent pricing
+/// vocabulary — product-slug-prefixed (`store_spy.analysis.run`,
+/// `store_spy.monitoring.slots`, `store_spy.intelligence.advanced`) because
+/// entitlements are shared across products and the key is read in logs,
+/// support tooling and pricing copy where the product_id join isn't visible.
+///
+/// `quota` is the ceiling only — null means a boolean capability or an
+/// unlimited allowance, a number means a countable one. The control plane
+/// does NOT do the counting: Store Spy's two real quotas are a rolling-24h
+/// window (analysis.run) and a live COUNT of ACTIVE watches
+/// (monitoring.slots), neither of which is a cumulative integer the control
+/// plane can compute. The entitlements endpoint returns `quota` + `allowed`
+/// (from subscription status/expiry only) + `reason`; the consuming product
+/// owns the used-vs-quota comparison, under whatever lock its write path
+/// already uses (recordAnalysisUsage()'s advisory lock, startMonitoring()'s
+/// COUNT).
+///
+/// `used` is therefore UNUSED today — kept for a future genuinely cumulative
+/// quota (e.g. "N exports ever") that the control plane could own end to end.
+/// Nothing reads or writes it in B1.
+model CpEntitlement {
+  id             String         @id @default(cuid())
+  subscriptionId String         @map("subscription_id")
+  subscription   CpSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  featureKey     String         @map("feature_key")
+  quota          Int?
+  /// Reserved for future cumulative quotas — see the model doc comment. Not
+  /// read or written anywhere as of B1.
+  used           Int            @default(0)
+
+  @@unique([subscriptionId, featureKey])
+  @@map("entitlements")
+  @@schema("control_plane")
+}
+
+/// An employee. A wholly separate table from CpUser (rule 1): different
+/// auth, different lifecycle, different blast radius. `isSuperadmin` is a
+/// column here (rule 3) so it can never be handed out through the ordinary
+/// StaffRole assignment path.
+model Staff {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String?  @map("password_hash")
+  isSuperadmin Boolean  @default(false) @map("is_superadmin")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  roles StaffRole[]
+
+  @@map("staff")
+  @@schema("control_plane")
+}
+
+/// Per-product role assignment for an employee (rule 4). `role` is a plain
+/// String, not an enum — matching this codebase's established convention for
+/// role/permission/action strings (AdminAuditLog.action,
+/// AdminPermissionGrant.permission): a new role should never need a
+/// migration. Superadmin is NOT expressible here — it is Staff.isSuperadmin.
+model StaffRole {
+  id        String    @id @default(cuid())
+  staffId   String    @map("staff_id")
+  staff     Staff     @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  productId String    @map("product_id")
+  product   CpProduct @relation(fields: [productId], references: [id])
+  role      String
+
+  @@unique([staffId, productId, role])
+  @@index([productId])
+  @@map("staff_roles")
+  @@schema("control_plane")
+}
+
+/// Cross-cutting audit trail for the control plane. `actor_type` /
+/// `actor_id` / `action` / `target` are plain strings with NO foreign keys
+/// — the same discipline as store_spy's AdminAuditLog: a staff or user
+/// deletion must never cascade into the trail. `actor_type` is e.g.
+/// "staff" | "user" | "system".
+model CpAuditLog {
+  id        String   @id @default(cuid())
+  actorType String   @map("actor_type")
+  actorId   String   @map("actor_id")
+  action    String
+  target    String?
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([actorType, actorId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_log")
+  @@schema("control_plane")
 }
