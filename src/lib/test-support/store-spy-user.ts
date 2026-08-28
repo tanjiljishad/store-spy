@@ -1,4 +1,4 @@
-import type { PrismaClient, Role } from "@prisma/client";
+import type { PrismaClient, Role, User } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import type { PlanTier } from "../entitlements/plan-limits";
 import { provisionStoreSpyAccount, syncControlPlanePlan, trialEndsFromNow } from "../control-plane/provision";
@@ -27,21 +27,24 @@ export async function makeStoreSpyUser(
     freeTrialEndsAt?: Date;
     marketingConsent?: boolean;
   } = {},
-): Promise<{ id: string; email: string }> {
+): Promise<User> {
   const id = randomUUID();
   const email = opts.email ?? `${randomUUID().slice(0, 12)}@test.local`;
   const plan = opts.plan ?? "FREE";
   const role = opts.role ?? "USER";
   const passwordHash = opts.passwordHash === undefined ? "test-hash" : opts.passwordHash;
-  const tosAcceptedAt = opts.tosAcceptedAt === undefined ? new Date() : opts.tosAcceptedAt;
+  // Mirror `prisma.user.create` defaults: store_spy.User.tosAcceptedAt has no
+  // @default, so a bare create leaves it null. Tests for the OAuth-shaped
+  // "no ToS yet" path rely on that. Pass an explicit Date for a consented user.
+  const tosAcceptedAt = opts.tosAcceptedAt ?? null;
   const emailVerifiedAt = opts.emailVerified ?? null;
   const trialEndsAt = opts.freeTrialEndsAt ?? trialEndsFromNow();
   const marketingConsent = opts.marketingConsent ?? false;
   const now = new Date();
 
-  await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     await provisionStoreSpyAccount(tx, { userId: id, email, passwordHash, name: opts.name ?? null, emailVerifiedAt, tosAcceptedAt, trialEndsAt });
-    await tx.user.create({
+    const user = await tx.user.create({
       data: {
         id,
         email,
@@ -60,9 +63,8 @@ export async function makeStoreSpyUser(
     });
     if (role !== "USER") await tx.userAdminRole.create({ data: { userId: id, role } });
     if (plan !== "FREE") await syncControlPlanePlan(tx, { userId: id, plan, trialEndsAt, paidPeriodEnd: null });
+    return user;
   });
-
-  return { id, email };
 }
 
 /**

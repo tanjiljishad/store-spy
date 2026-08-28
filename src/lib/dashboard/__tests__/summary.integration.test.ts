@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getDashboardSummary } from "../summary";
 import { startMonitoring } from "../../monitoring/watch";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -24,10 +25,11 @@ beforeEach(async () => {
   await prisma.$executeRawUnsafe(
     `TRUNCATE "AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","User","Store" RESTART IDENTITY CASCADE`,
   );
+  await resetControlPlane(prisma);
 });
 
 async function makeUser(plan: "FREE" | "BASIC" = "FREE") {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan } });
+  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan });
 }
 /** Milestone 12 §1.4: pins freeTrialEndsAt relative to the test's own fixed NOW rather than the DB default's real wall-clock time, so daysRemaining math stays deterministic. */
 async function setTrialEnd(userId: string, at: Date) {

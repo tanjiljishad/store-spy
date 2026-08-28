@@ -32,6 +32,7 @@ import { POST as revokeSessions } from "../../../app/api/admin/users/[id]/revoke
 import { GET as auditLog } from "../../../app/api/admin/audit/route";
 import { _resetRateLimitState } from "../../security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL unset — run via `npm run test:integration`");
@@ -46,6 +47,7 @@ beforeEach(async () => {
     `TRUNCATE "AdminAuditLog","AnalysisUsage","Watchlist","Session","Account","User","Store" RESTART IDENTITY CASCADE`,
   );
   _resetRateLimitState();
+  await resetControlPlane(prisma);
 });
 
 afterEach(() => {
@@ -53,7 +55,7 @@ afterEach(() => {
 });
 
 async function makeUser(role: "USER" | "SUPPORT_ADMIN" | "BILLING_ADMIN" | "SUPER_ADMIN" = "USER", email?: string) {
-  return prisma.user.create({ data: { email: email ?? `${randomUUID()}@example.com`, role } });
+  return makeStoreSpyUser(prisma, { email: email ?? `${randomUUID()}@example.com`, role });
 }
 
 function signInAs(user: { id: string; email: string; role: string }) {

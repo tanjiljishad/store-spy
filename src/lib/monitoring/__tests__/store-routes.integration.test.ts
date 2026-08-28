@@ -26,6 +26,7 @@ import { GET as getEvents } from "../../../app/api/store/[domain]/events/route";
 import { GET as getActivity } from "../../../app/api/store/[domain]/activity/route";
 import { _resetRateLimitState } from "../../security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -49,6 +50,7 @@ beforeEach(async () => {
   );
   _resetRateLimitState();
   vi.mocked(getCurrentUser).mockReset();
+  await resetControlPlane(prisma);
 });
 
 function req(path: string, ip = "203.0.113.1"): NextRequest {
@@ -57,7 +59,7 @@ function req(path: string, ip = "203.0.113.1"): NextRequest {
 
 /** A signed-in user who has already analyzed `storeId` — clears the store-access.ts gate. */
 async function signInAsAnalyzerOf(storeId: string): Promise<void> {
-  const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+  const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
   await prisma.analysisUsage.create({ data: { userId: user.id, storeId } });
   vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
 }

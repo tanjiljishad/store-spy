@@ -29,6 +29,7 @@ import { GET as exportAccount } from "../../../app/api/account/export/route";
 import { POST as deleteAccount } from "../../../app/api/account/delete/route";
 import { _resetRateLimitState } from "../../security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
@@ -40,6 +41,7 @@ beforeEach(async () => {
   );
   _resetRateLimitState();
   vi.mocked(getCurrentUser).mockReset();
+  await resetControlPlane(prisma);
 });
 
 function deleteReq(body?: unknown): NextRequest {
@@ -51,8 +53,10 @@ function deleteReq(body?: unknown): NextRequest {
 }
 
 async function makeUser(overrides: Partial<{ email: string; plan: "FREE" | "BASIC" | "BUSINESS"; role: "USER" | "SUPER_ADMIN" }> = {}) {
-  return prisma.user.create({
-    data: { email: overrides.email ?? `${randomUUID()}@example.com`, plan: overrides.plan ?? "FREE", role: overrides.role ?? "USER" },
+  return makeStoreSpyUser(prisma, {
+    email: overrides.email ?? `${randomUUID()}@example.com`,
+    plan: overrides.plan ?? "FREE",
+    role: overrides.role ?? "USER",
   });
 }
 

@@ -6,6 +6,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import AdminLayout from "../../../app/admin/layout";
 import { requireUser, UnauthorizedError } from "@/lib/auth/session";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 /**
  * Milestone 12 §4.2 preflight finding: AdminLayout is a sibling of
@@ -19,6 +20,7 @@ const prisma = new PrismaClient();
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(`TRUNCATE "Session","Account","User" RESTART IDENTITY CASCADE`);
   vi.mocked(requireUser).mockReset();
+  await resetControlPlane(prisma);
 });
 
 function redirectDestination(e: unknown): string | null {
@@ -41,14 +43,14 @@ describe("AdminLayout — Milestone 12 §4.2 preflight: consent gate now covers 
   });
 
   it("404s a plain USER role, before the consent check even runs", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "USER" } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role: "USER" });
     vi.mocked(requireUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
 
     await expect(AdminLayout({ children: null })).rejects.toThrow(); // notFound() also throws a Next-internal signal
   });
 
   it("THE GAP THIS CLOSES: redirects a privileged, OAuth-shaped account (tosAcceptedAt never set) to /welcome instead of rendering the admin panel", async () => {
-    const admin = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "SUPER_ADMIN" } }); // no tosAcceptedAt — exactly a promoted-before-completing-/welcome OAuth account
+    const admin = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role: "SUPER_ADMIN" }); // no tosAcceptedAt — exactly a promoted-before-completing-/welcome OAuth account
     vi.mocked(requireUser).mockResolvedValue({ id: admin.id, email: admin.email, plan: "FREE", role: "SUPER_ADMIN" });
 
     let caught: unknown;
@@ -61,7 +63,7 @@ describe("AdminLayout — Milestone 12 §4.2 preflight: consent gate now covers 
   });
 
   it("does NOT redirect a privileged account that has completed ToS acceptance and email verification", async () => {
-    const admin = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "SUPER_ADMIN", tosAcceptedAt: new Date(), emailVerified: new Date() } });
+    const admin = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role: "SUPER_ADMIN", tosAcceptedAt: new Date(), emailVerified: new Date() });
     vi.mocked(requireUser).mockResolvedValue({ id: admin.id, email: admin.email, plan: "FREE", role: "SUPER_ADMIN" });
 
     const result = await AdminLayout({ children: "admin content" });
@@ -69,7 +71,7 @@ describe("AdminLayout — Milestone 12 §4.2 preflight: consent gate now covers 
   });
 
   it("THE SAME GAP, for email verification: redirects a privileged account promoted before ever verifying its email to /verify-email instead of rendering the admin panel", async () => {
-    const admin = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "SUPER_ADMIN", tosAcceptedAt: new Date() } }); // no emailVerified
+    const admin = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role: "SUPER_ADMIN", tosAcceptedAt: new Date() }); // no emailVerified
     vi.mocked(requireUser).mockResolvedValue({ id: admin.id, email: admin.email, plan: "FREE", role: "SUPER_ADMIN" });
 
     let caught: unknown;
@@ -82,7 +84,7 @@ describe("AdminLayout — Milestone 12 §4.2 preflight: consent gate now covers 
   });
 
   it("security review fix 1: does NOT 404 a plain USER role that holds an active AdminPermissionGrant — the exact gap the old role !== \"USER\" check had", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "USER", tosAcceptedAt: new Date(), emailVerified: new Date() } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role: "USER", tosAcceptedAt: new Date(), emailVerified: new Date() });
     await prisma.adminPermissionGrant.create({ data: { userId: user.id, permission: "metrics:read", grantedByUserId: "test-admin" } });
     vi.mocked(requireUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
 
@@ -91,7 +93,7 @@ describe("AdminLayout — Milestone 12 §4.2 preflight: consent gate now covers 
   });
 
   it("still 404s a plain USER role whose only grant has expired", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "USER", tosAcceptedAt: new Date(), emailVerified: new Date() } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role: "USER", tosAcceptedAt: new Date(), emailVerified: new Date() });
     await prisma.adminPermissionGrant.create({
       data: { userId: user.id, permission: "metrics:read", grantedByUserId: "test-admin", expiresAt: new Date(Date.now() - 1000) },
     });
@@ -108,7 +110,7 @@ describe("AdminLayout — Milestone 12 §4.2 preflight: consent gate now covers 
   // because the layout is where a future refactor that handled the two
   // columns differently would actually be user-visible.
   it("still 404s a plain USER role whose only grant was manually revoked (not expired)", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "USER", tosAcceptedAt: new Date() } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role: "USER", tosAcceptedAt: new Date() });
     await prisma.adminPermissionGrant.create({
       data: { userId: user.id, permission: "metrics:read", grantedByUserId: "test-admin", revokedAt: new Date() },
     });

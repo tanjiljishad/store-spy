@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { countAnalysesInWindow, getAnalysisUsage, hasAnalyzedStore, hasAnalyzedStoreInWindow, recordAnalysisUsage } from "../analysis-usage";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 /**
  * Milestone 12 §1.2: the windowed ledger replaces the old lifetime "unique
@@ -16,8 +17,11 @@ const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () => prisma.$executeRawUnsafe(`TRUNCATE "AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","User","Store" RESTART IDENTITY CASCADE`));
-async function makeUser(plan: "FREE" | "BASIC" | "BUSINESS" = "FREE") { return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan } }); }
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(`TRUNCATE "AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","User","Store" RESTART IDENTITY CASCADE`);
+  await resetControlPlane(prisma);
+});
+async function makeUser(plan: "FREE" | "BASIC" | "BUSINESS" = "FREE") { return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan }); }
 async function makeStore() { return prisma.store.create({ data: { domain: `${randomUUID().slice(0, 8)}.com`, platform: "SHOPIFY" } }); }
 
 describe("analysis usage ledger under the freemium model", () => {

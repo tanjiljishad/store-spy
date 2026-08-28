@@ -25,6 +25,7 @@ import { POST as resendVerification } from "../../../app/api/auth/resend-verific
 import { _resetRateLimitState } from "../../security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
 import { sendVerificationEmail } from "@/lib/email/verification-email";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
@@ -36,13 +37,14 @@ beforeEach(async () => {
   vi.mocked(getCurrentUser).mockReset();
   vi.mocked(sendVerificationEmail).mockReset();
   vi.mocked(sendVerificationEmail).mockResolvedValue(undefined);
+  await resetControlPlane(prisma);
 });
 
 function req(): NextRequest {
   return new NextRequest("http://localhost/api/auth/resend-verification", { method: "POST" });
 }
 async function makeUnverifiedUser() {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
 }
 
 describe("POST /api/auth/resend-verification", () => {
@@ -65,7 +67,7 @@ describe("POST /api/auth/resend-verification", () => {
   });
 
   it("does not send, and reports already_verified, for an already-verified account", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, emailVerified: new Date() } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, emailVerified: new Date() });
     vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
 
     const res = await resendVerification(req());

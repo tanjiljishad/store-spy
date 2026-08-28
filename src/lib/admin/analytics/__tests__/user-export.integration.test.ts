@@ -3,22 +3,26 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { exportUsers, exportUsersWithAudit } from "../user-export";
 import type { AdminActor } from "../../guard";
+import { makeStoreSpyUser, resetControlPlane } from "../../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () => prisma.$executeRawUnsafe(`TRUNCATE "AdminAuditLog","Session","Account","User" RESTART IDENTITY CASCADE`));
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(`TRUNCATE "AdminAuditLog","Session","Account","User" RESTART IDENTITY CASCADE`);
+  await resetControlPlane(prisma);
+});
 
 async function makeActor(): Promise<AdminActor> {
-  const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role: "SUPER_ADMIN" } });
+  const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role: "SUPER_ADMIN" });
   return { id: user.id, email: user.email, role: "SUPER_ADMIN" } as AdminActor;
 }
 
 describe("exportUsers", () => {
   it("respects plan/role/email filters, same as searchUsers", async () => {
-    await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "BUSINESS" } });
-    await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+    await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "BUSINESS" });
+    await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
 
     const rows = await exportUsers(prisma, { plan: "BUSINESS" });
     expect(rows).toHaveLength(1);
@@ -26,7 +30,7 @@ describe("exportUsers", () => {
   });
 
   it("never includes passwordHash or any other field outside the declared allowlist", async () => {
-    await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, passwordHash: "bcrypt$fake$hash" } });
+    await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, passwordHash: "bcrypt$fake$hash" });
     const rows = await exportUsers(prisma);
     expect(Object.keys(rows[0]).sort()).toEqual(["createdAt", "email", "id", "plan", "role"].sort());
   });
@@ -35,8 +39,8 @@ describe("exportUsers", () => {
 describe("exportUsersWithAudit", () => {
   it("purpose:\"support\" exports rows and writes one audit row recording row count, filters, and purpose", async () => {
     const actor = await makeActor();
-    await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "BASIC" } });
-    await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+    await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "BASIC" });
+    await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
 
     const result = await exportUsersWithAudit(prisma, actor, { plan: "BASIC" }, "support");
     expect(result.outcome).toBe("exported");
@@ -52,8 +56,8 @@ describe("exportUsersWithAudit", () => {
   // Milestone 12 §4.1: "purpose:'marketing' returns only consented users."
   it("purpose:\"marketing\" returns ONLY marketingConsent=true users — an unconsented user never appears", async () => {
     const actor = await makeActor();
-    const consented = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, marketingConsent: true, marketingConsentAt: new Date(), marketingConsentSource: "signup_form" } });
-    const unconsented = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, marketingConsent: false } });
+    const consented = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, marketingConsent: true });
+    const unconsented = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, marketingConsent: false });
 
     const result = await exportUsersWithAudit(prisma, actor, {}, "marketing");
     expect(result.outcome).toBe("exported");
@@ -69,8 +73,8 @@ describe("exportUsersWithAudit", () => {
 
   it("purpose:\"marketing\" combined with a plan filter still excludes unconsented users of that plan", async () => {
     const actor = await makeActor();
-    await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "BUSINESS", marketingConsent: true } });
-    const unconsentedBusiness = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "BUSINESS", marketingConsent: false } });
+    await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "BUSINESS", marketingConsent: true });
+    const unconsentedBusiness = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "BUSINESS", marketingConsent: false });
 
     const result = await exportUsersWithAudit(prisma, actor, { plan: "BUSINESS" }, "marketing");
     if (result.outcome !== "exported") throw new Error("unreachable");
@@ -80,8 +84,8 @@ describe("exportUsersWithAudit", () => {
 
   it("purpose:\"support\" is unaffected by consent status — includes both consented and unconsented users", async () => {
     const actor = await makeActor();
-    const consented = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, marketingConsent: true } });
-    const unconsented = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, marketingConsent: false } });
+    const consented = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, marketingConsent: true });
+    const unconsented = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, marketingConsent: false });
 
     const result = await exportUsersWithAudit(prisma, actor, {}, "support");
     if (result.outcome !== "exported") throw new Error("unreachable");

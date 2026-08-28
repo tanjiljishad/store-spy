@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { buildFullStoreReport } from "../run-analysis";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 /**
  * Milestone 7 Sub-phase B, Finding 1: pixels and payment providers were
@@ -32,11 +33,12 @@ beforeEach(async () => {
   await prisma.$executeRawUnsafe(
     `TRUNCATE "AnalysisUsage","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","Watchlist","User","Store" RESTART IDENTITY CASCADE`,
   );
+  await resetControlPlane(prisma);
 });
 
 async function makeStoreAndUser(domain: string) {
   const store = await prisma.store.create({ data: { domain, platform: "SHOPIFY", themeName: "Dawn" } });
-  const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+  const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
   return { store, user };
 }
 

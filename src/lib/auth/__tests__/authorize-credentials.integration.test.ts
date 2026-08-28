@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { authorizeCredentials } from "../authorize-credentials";
 import { hashPassword } from "../password";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -22,11 +23,12 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(`TRUNCATE "LoginAttempt","Session","Account","User" RESTART IDENTITY CASCADE`);
+  await resetControlPlane(prisma);
 });
 
 async function makeUser(password: string) {
   const email = `${randomUUID()}@example.com`;
-  await prisma.user.create({ data: { email, passwordHash: await hashPassword(password) } });
+  await makeStoreSpyUser(prisma, { email, passwordHash: await hashPassword(password) });
   return email;
 }
 

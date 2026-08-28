@@ -3,12 +3,16 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getRevenueMetrics } from "../revenue";
 import { monthlyPriceCents } from "../../../billing/pricing";
+import { makeStoreSpyUser, resetControlPlane } from "../../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () => prisma.$executeRawUnsafe(`TRUNCATE "Subscription","Session","Account","User" RESTART IDENTITY CASCADE`));
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(`TRUNCATE "Subscription","Session","Account","User" RESTART IDENTITY CASCADE`);
+  await resetControlPlane(prisma);
+});
 
 const WINDOW_START = new Date("2026-08-01T00:00:00Z");
 const WINDOW_END = new Date("2026-08-08T00:00:00Z");
@@ -16,7 +20,7 @@ const INSIDE = new Date("2026-08-05T12:00:00Z");
 const BEFORE = new Date("2026-07-20T12:00:00Z");
 
 async function makeUser() {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
 }
 
 describe("getRevenueMetrics", () => {

@@ -11,15 +11,19 @@ import {
   revokePermission,
 } from "../permissions-service";
 import type { AdminActor } from "../guard";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () => prisma.$executeRawUnsafe(`TRUNCATE "AdminPermissionGrant","AdminAuditLog","User" RESTART IDENTITY CASCADE`));
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(`TRUNCATE "AdminPermissionGrant","AdminAuditLog","User" RESTART IDENTITY CASCADE`);
+  await resetControlPlane(prisma);
+});
 
 async function makeUser(role: "USER" | "SUPER_ADMIN" = "USER") {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role } });
+  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role });
 }
 function actorFrom(user: { id: string; email: string; role: string }): AdminActor {
   return { id: user.id, email: user.email, plan: "FREE", role: user.role as never };

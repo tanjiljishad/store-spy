@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { NextRequest } from "next/server";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 /**
  * Exercises the actual POST/DELETE route handlers for
@@ -46,6 +47,7 @@ beforeEach(async () => {
   );
   _resetRateLimitState();
   mockGetCurrentUser.mockReset();
+  await resetControlPlane(prisma);
 });
 
 function req(path: string, body?: unknown): NextRequest {
@@ -59,7 +61,7 @@ async function makeStore() {
   return prisma.store.create({ data: { domain: `${randomUUID().slice(0, 8)}.com`, platform: "SHOPIFY" } });
 }
 async function makeUser(plan: "FREE" | "BASIC" | "BUSINESS" = "FREE") {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan } });
+  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan });
 }
 
 describe("POST /api/store/[domain]/watch", () => {

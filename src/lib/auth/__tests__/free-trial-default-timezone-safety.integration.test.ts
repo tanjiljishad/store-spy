@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 /**
  * Regression coverage for a real bug found live during Milestone 12
@@ -51,12 +52,13 @@ afterAll(async () => {
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(`TRUNCATE "User" RESTART IDENTITY CASCADE`);
   await prisma.$executeRawUnsafe(`SET TIME ZONE '${PATHOLOGICAL_TZ}'`);
+  await resetControlPlane(prisma);
 });
 
 describe(`User.freeTrialEndsAt's DB default stays correct under a non-UTC session timezone (${PATHOLOGICAL_TZ})`, () => {
   it("freeTrialEndsAt lands exactly 30.0 days after createdAt — not 30 days plus/minus the session's UTC offset", async () => {
     const before = new Date();
-    const user = await prisma.user.create({ data: { email: `tz-${Date.now()}@example.com` } });
+    const user = await makeStoreSpyUser(prisma, { email: `tz-${Date.now()}@example.com` });
     const after = new Date();
 
     expect(user.freeTrialEndsAt).not.toBeNull();
@@ -74,7 +76,7 @@ describe(`User.freeTrialEndsAt's DB default stays correct under a non-UTC sessio
   });
 
   it("the raw stored value (bypassing Prisma's own Date parsing) is the correct UTC-equivalent wall-clock time, not the session-timezone-local one", async () => {
-    const user = await prisma.user.create({ data: { email: `tz-raw-${Date.now()}@example.com` } });
+    const user = await makeStoreSpyUser(prisma, { email: `tz-raw-${Date.now()}@example.com` });
 
     const rows = await prisma.$queryRaw<{ created_text: string; trial_text: string }[]>`
       SELECT "createdAt"::text as created_text, "freeTrialEndsAt"::text as trial_text

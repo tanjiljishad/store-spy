@@ -3,16 +3,18 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getDailyAnalysesTrend, getUsageCostMetrics } from "../usage-cost";
 import { SERPAPI_COST_PER_CALL_CENTS } from "../vendor-cost";
+import { makeStoreSpyUser, resetControlPlane } from "../../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () =>
-  prisma.$executeRawUnsafe(
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(
     `TRUNCATE "MarketingCollectionRun","Watchlist","AnalysisUsage","Crawl","Session","Account","Store","User" RESTART IDENTITY CASCADE`,
-  ),
-);
+  );
+  await resetControlPlane(prisma);
+});
 
 const WINDOW_START = new Date("2026-08-01T00:00:00Z");
 const WINDOW_END = new Date("2026-08-08T00:00:00Z");
@@ -20,7 +22,7 @@ const INSIDE = new Date("2026-08-05T12:00:00Z");
 const OUTSIDE = new Date("2026-07-20T12:00:00Z");
 
 async function makeUser(plan: "FREE" | "BASIC" | "BUSINESS" = "FREE") {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan } });
+  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan });
 }
 async function makeStore() {
   return prisma.store.create({ data: { domain: `${randomUUID().slice(0, 8)}.com`, platform: "SHOPIFY" } });

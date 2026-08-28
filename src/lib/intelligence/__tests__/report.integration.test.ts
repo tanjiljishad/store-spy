@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { buildStoreIntelligenceReport } from "../report";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 /**
  * The canonical composer's job is composition, not calculation — these
@@ -31,13 +32,14 @@ beforeEach(async () => {
   await prisma.$executeRawUnsafe(
     `TRUNCATE "AnalysisUsage","Event","ProductStateSnapshot","AdObservation","MarketingCollectionRun","Product","StoreEntity","Crawl","StoreStats","Watchlist","User","Store" RESTART IDENTITY CASCADE`,
   );
+  await resetControlPlane(prisma);
 });
 
 async function makeStoreAndUser(domain: string, overrides: Partial<{ baselinedAt: Date }> = {}) {
   const store = await prisma.store.create({
     data: { domain, platform: "SHOPIFY", themeName: "Dawn", baselinedAt: overrides.baselinedAt ?? new Date() },
   });
-  const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+  const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
   await prisma.analysisUsage.create({ data: { userId: user.id, storeId: store.id } });
   return { store, user };
 }

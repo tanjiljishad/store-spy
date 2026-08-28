@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { NextRequest } from "next/server";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const mockGetCurrentUser = vi.fn();
 vi.mock("@/lib/auth/session", () => ({
@@ -33,6 +34,7 @@ beforeEach(async () => {
   );
   _resetRateLimitState();
   mockGetCurrentUser.mockReset();
+  await resetControlPlane(prisma);
 });
 
 function req(domain: string): NextRequest {
@@ -61,7 +63,7 @@ describe("GET /api/store/[domain]/report", () => {
   });
 
   it("returns unanalyzed_preview for a signed-in user who hasn't spent a credit on this store", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
     mockGetCurrentUser.mockResolvedValue({ id: user.id, email: user.email, plan: "FREE" });
     await makeStore("not-mine.com");
 
@@ -72,7 +74,7 @@ describe("GET /api/store/[domain]/report", () => {
   });
 
   it("returns the full report for a store the user HAS analyzed", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
     mockGetCurrentUser.mockResolvedValue({ id: user.id, email: user.email, plan: "FREE" });
     const store = await makeStore("mine.com");
     await prisma.analysisUsage.create({ data: { userId: user.id, storeId: store.id } });
@@ -98,7 +100,7 @@ describe("GET /api/store/[domain]/report", () => {
   });
 
   it("computes a real averagePrice once the store has active products, instead of a fabricated placeholder", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
     mockGetCurrentUser.mockResolvedValue({ id: user.id, email: user.email, plan: "FREE" });
     const store = await makeStore("priced.com");
     await prisma.analysisUsage.create({ data: { userId: user.id, storeId: store.id } });
@@ -115,8 +117,8 @@ describe("GET /api/store/[domain]/report", () => {
   });
 
   it("user isolation: user B viewing a store user A analyzed sees unanalyzed_preview, not A's full report", async () => {
-    const userA = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
-    const userB = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+    const userA = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
+    const userB = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
     const store = await makeStore("shared-corpus-store.com");
     await prisma.analysisUsage.create({ data: { userId: userA.id, storeId: store.id } });
 

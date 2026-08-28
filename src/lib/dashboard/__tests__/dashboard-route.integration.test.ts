@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { NextRequest } from "next/server";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 /** getCurrentUser mocked at this one seam — see watch-route.integration.test.ts (Sub-phase A) for why. */
 const mockGetCurrentUser = vi.fn();
@@ -34,6 +35,7 @@ beforeEach(async () => {
   );
   _resetRateLimitState();
   mockGetCurrentUser.mockReset();
+  await resetControlPlane(prisma);
 });
 
 function req(): NextRequest {
@@ -48,7 +50,7 @@ describe("GET /api/dashboard", () => {
   });
 
   it("returns a real summary for a signed-in user", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
     mockGetCurrentUser.mockResolvedValue({ id: user.id, email: user.email, plan: "FREE" });
 
     const res = await dashboardGet(req());
@@ -59,7 +61,7 @@ describe("GET /api/dashboard", () => {
   });
 
   it("never exposes internal database ids — only derived, presentation-ready fields", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
     mockGetCurrentUser.mockResolvedValue({ id: user.id, email: user.email, plan: "FREE" });
 
     const res = await dashboardGet(req());

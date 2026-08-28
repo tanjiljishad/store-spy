@@ -2,18 +2,22 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getCohortRetention } from "../retention";
+import { makeStoreSpyUser, resetControlPlane } from "../../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () => prisma.$executeRawUnsafe(`TRUNCATE "Subscription","Session","Account","User" RESTART IDENTITY CASCADE`));
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(`TRUNCATE "Subscription","Session","Account","User" RESTART IDENTITY CASCADE`);
+  await resetControlPlane(prisma);
+});
 
 const RANGE_START = new Date("2026-06-01T00:00:00Z");
 const RANGE_END = new Date("2026-09-01T00:00:00Z");
 
 async function makeUser(createdAt: Date, plan: "FREE" | "BASIC" | "BUSINESS" = "FREE") {
-  const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan } });
+  const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan });
   await prisma.user.update({ where: { id: user.id }, data: { createdAt } });
   return user;
 }

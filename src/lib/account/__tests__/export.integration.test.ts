@@ -2,20 +2,23 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { exportOwnAccountData } from "../export";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () =>
-  prisma.$executeRawUnsafe(
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(
     `TRUNCATE "Checkout","Subscription","AnalysisUsage","Watchlist","Session","Account","Store","User" RESTART IDENTITY CASCADE`,
-  ),
-);
+  );
+  await resetControlPlane(prisma);
+});
 
 async function makeUser(overrides: Partial<{ marketingConsent: boolean; passwordHash: string }> = {}) {
-  return prisma.user.create({
-    data: { email: `${randomUUID()}@example.com`, passwordHash: overrides.passwordHash ?? "bcrypt$fake$hash", marketingConsent: overrides.marketingConsent ?? false },
+  return makeStoreSpyUser(prisma, {
+    passwordHash: overrides.passwordHash ?? "bcrypt$fake$hash",
+    marketingConsent: overrides.marketingConsent ?? false,
   });
 }
 async function makeStore() {
@@ -36,8 +39,11 @@ describe("exportOwnAccountData", () => {
 
   it("includes the real marketing consent fields", async () => {
     const consentedAt = new Date("2026-08-01T00:00:00Z");
-    const user = await prisma.user.create({
-      data: { email: `${randomUUID()}@example.com`, marketingConsent: true, marketingConsentAt: consentedAt, marketingConsentSource: "signup_form" },
+    const user = await makeStoreSpyUser(prisma, { marketingConsent: true });
+    // exact historical timestamp/source this test asserts on:
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { marketingConsentAt: consentedAt, marketingConsentSource: "signup_form" },
     });
     const data = await exportOwnAccountData(prisma, user.id);
     expect(data!.profile.marketingConsent).toBe(true);

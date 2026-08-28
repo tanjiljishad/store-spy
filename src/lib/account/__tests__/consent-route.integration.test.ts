@@ -28,6 +28,7 @@ import { randomUUID } from "node:crypto";
 import { POST as postConsent } from "../../../app/api/account/consent/route";
 import { _resetRateLimitState } from "../../security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
@@ -37,6 +38,7 @@ beforeEach(async () => {
   await prisma.$executeRawUnsafe(`TRUNCATE "Session","Account","User" RESTART IDENTITY CASCADE`);
   _resetRateLimitState();
   vi.mocked(getCurrentUser).mockReset();
+  await resetControlPlane(prisma);
 });
 
 function req(body: unknown): NextRequest {
@@ -47,7 +49,7 @@ function req(body: unknown): NextRequest {
   });
 }
 async function makeOAuthShapedUser() {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
 }
 
 describe("POST /api/account/consent", () => {

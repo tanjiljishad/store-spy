@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getFunnelCounts } from "../funnel";
 import { getCohortRetention } from "../retention";
 import { getDailyAnalysesTrend } from "../usage-cost";
+import { makeStoreSpyUser, resetControlPlane } from "../../../test-support/store-spy-user";
 
 /**
  * Regression coverage for the exact class of bug AGENTS.md's Database time
@@ -51,6 +52,7 @@ beforeEach(async () => {
     `TRUNCATE "AnonymousAnalysis","Subscription","Watchlist","AnalysisUsage","Session","Account","Store","User" RESTART IDENTITY CASCADE`,
   );
   await prisma.$executeRawUnsafe(`SET TIME ZONE '${PATHOLOGICAL_TZ}'`);
+  await resetControlPlane(prisma);
 });
 
 describe(`analytics queries stay UTC-correct under a non-UTC session timezone (${PATHOLOGICAL_TZ})`, () => {
@@ -64,7 +66,7 @@ describe(`analytics queries stay UTC-correct under a non-UTC session timezone ($
     // comparison, the +05:45 offset shifts the effective boundary by nearly
     // 6 hours, which would OUTSIDE-the-window a signup this close to the edge.
     const justInsideWindowEnd = new Date("2026-08-07T23:30:00Z");
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
     await prisma.user.update({ where: { id: user.id }, data: { createdAt: justInsideWindowEnd } });
 
     const windowStart = new Date("2026-08-01T00:00:00Z");
@@ -74,7 +76,7 @@ describe(`analytics queries stay UTC-correct under a non-UTC session timezone ($
 
     // And a signup exactly AT windowEnd must be excluded (half-open [start, end)) — the mirror check.
     const rightAtWindowEnd = new Date("2026-08-08T00:00:00Z");
-    const secondUser = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    const secondUser = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
     await prisma.user.update({ where: { id: secondUser.id }, data: { createdAt: rightAtWindowEnd } });
     const countsAfter = await getFunnelCounts(prisma, windowStart, windowEnd);
     expect(countsAfter.signups).toBe(1); // still 1, not 2 — the new row is exactly on the excluded boundary
@@ -91,7 +93,7 @@ describe(`analytics queries stay UTC-correct under a non-UTC session timezone ($
     // July in UTC — instead, pick the LAST moment of July in UTC, which
     // under +05:45 local time has already rolled into August.
     const lastMomentOfJulyUtc = new Date("2026-07-31T23:00:00Z"); // local: 2026-08-01T04:45 — August locally, July in UTC
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
     await prisma.user.update({ where: { id: user.id }, data: { createdAt: lastMomentOfJulyUtc } });
 
     const cohorts = await getCohortRetention(prisma, new Date("2026-06-01T00:00:00Z"), new Date("2026-09-01T00:00:00Z"));
@@ -106,7 +108,7 @@ describe(`analytics queries stay UTC-correct under a non-UTC session timezone ($
     // of a UTC day, which a +05:45 local reading has already rolled into
     // the next day.
     const lastHourOfAug8Utc = new Date("2026-08-08T23:00:00Z"); // local: 2026-08-09T04:45 — the 9th locally, the 8th in UTC
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
     const store = await prisma.store.create({ data: { domain: `${randomUUID().slice(0, 8)}.com`, platform: "SHOPIFY" } });
     const row = await prisma.analysisUsage.create({ data: { userId: user.id, storeId: store.id } });
     await prisma.analysisUsage.update({ where: { id: row.id }, data: { createdAt: lastHourOfAug8Utc } });

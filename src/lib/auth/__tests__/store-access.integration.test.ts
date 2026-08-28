@@ -25,6 +25,7 @@ import { GET as growthGet } from "../../../app/api/store/[domain]/growth/route";
 import { GET as marketingGet } from "../../../app/api/store/[domain]/marketing/route";
 import { _resetRateLimitState } from "../../security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -47,6 +48,7 @@ beforeEach(async () => {
     `TRUNCATE "AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","User","Store" RESTART IDENTITY CASCADE`,
   );
   _resetRateLimitState();
+  await resetControlPlane(prisma);
 });
 
 function mockSignedInAs(userId: string) {
@@ -60,7 +62,7 @@ async function makeStore() {
   return prisma.store.create({ data: { domain: `${randomUUID().slice(0, 8)}.com`, platform: "SHOPIFY" } });
 }
 async function makeUser() {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, plan: "FREE" } });
+  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
 }
 
 function req(domain: string, path: string): NextRequest {

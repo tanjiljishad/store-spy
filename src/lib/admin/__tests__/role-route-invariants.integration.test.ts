@@ -41,6 +41,7 @@ import { randomUUID } from "node:crypto";
 import { PATCH as patchRole } from "../../../app/api/admin/users/[id]/role/route";
 import { _resetRateLimitState } from "../../security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL unset — run via `npm run test:integration`");
@@ -57,10 +58,11 @@ afterEach(() => {
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(`TRUNCATE "AdminAuditLog","Session","Account","User" RESTART IDENTITY CASCADE`);
   _resetRateLimitState();
+  await resetControlPlane(prisma);
 });
 
 async function makeUser(role: "USER" | "ANALYST" | "SUPPORT_ADMIN" | "SUPER_ADMIN" = "USER") {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role } });
+  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role });
 }
 
 function req(body: unknown): NextRequest {

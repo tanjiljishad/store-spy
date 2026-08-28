@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getFunnelCounts } from "../funnel";
+import { makeStoreSpyUser, resetControlPlane } from "../../../test-support/store-spy-user";
 
 /**
  * Milestone 12 §3.1/§3.2: raw SQL against seeded fixtures, not whatever
@@ -12,11 +13,12 @@ const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () =>
-  prisma.$executeRawUnsafe(
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(
     `TRUNCATE "AnonymousAnalysis","Subscription","Watchlist","AnalysisUsage","Session","Account","Store","User" RESTART IDENTITY CASCADE`,
-  ),
-);
+  );
+  await resetControlPlane(prisma);
+});
 
 const WINDOW_START = new Date("2026-08-01T00:00:00Z");
 const WINDOW_END = new Date("2026-08-08T00:00:00Z");
@@ -25,7 +27,7 @@ const BEFORE = new Date("2026-07-20T12:00:00Z");
 const AFTER = new Date("2026-08-10T12:00:00Z");
 
 async function makeUser(createdAt: Date) {
-  const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+  const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
   await prisma.user.update({ where: { id: user.id }, data: { createdAt } });
   return user;
 }

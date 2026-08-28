@@ -2,14 +2,16 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getOperationalMetrics } from "../operational";
+import { makeStoreSpyUser, resetControlPlane } from "../../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
-beforeEach(async () =>
-  prisma.$executeRawUnsafe(`TRUNCATE "PromoRedemption","PromoCode","Store","User" RESTART IDENTITY CASCADE`),
-);
+beforeEach(async () => {
+  await prisma.$executeRawUnsafe(`TRUNCATE "PromoRedemption","PromoCode","Store","User" RESTART IDENTITY CASCADE`);
+  await resetControlPlane(prisma);
+});
 
 const NOW = new Date("2026-08-08T00:00:00Z");
 const WINDOW_START = new Date("2026-08-01T00:00:00Z");
@@ -47,7 +49,7 @@ describe("getOperationalMetrics", () => {
   });
 
   it("counts promo redemptions inside the window only", async () => {
-    const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.com` } });
+    const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
     const promo = await prisma.promoCode.create({
       data: { code: randomUUID(), discountType: "PERCENT", discountValue: 100, validFrom: new Date("2026-01-01T00:00:00Z"), createdByUserId: user.id },
     });

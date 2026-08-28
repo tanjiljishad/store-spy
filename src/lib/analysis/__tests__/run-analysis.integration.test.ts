@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import { runAnalysis } from "../run-analysis";
 import type { AnalysisSseEvent } from "../types";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 /**
  * The one place that decides what a browser sees for a real, AUTHENTICATED
@@ -39,6 +40,7 @@ beforeEach(async () => {
   await prisma.$executeRawUnsafe(
     `TRUNCATE "AnalysisUsage","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","Watchlist","Session","Account","User","Store" RESTART IDENTITY CASCADE`,
   );
+  await resetControlPlane(prisma);
 });
 
 // SAFE_DNS stands in for real DNS resolution — see shopify.test.ts for why
@@ -84,7 +86,7 @@ async function collectEvents(fetchImpl: typeof fetch, urlInput: string, caller: 
 }
 
 async function makeCaller(plan: Caller["plan"] = "FREE"): Promise<Caller> {
-  const user = await prisma.user.create({ data: { email: `${Math.random().toString(36).slice(2)}@example.com`, plan } });
+  const user = await makeStoreSpyUser(prisma, { email: `${Math.random().toString(36).slice(2)}@example.com`, plan });
   return { userId: user.id, plan };
 }
 

@@ -32,6 +32,7 @@ import { POST as assignPromo } from "../../../app/api/admin/promos/[id]/assign/r
 import { POST as revokePromo } from "../../../app/api/admin/promos/[id]/revoke/route";
 import { _resetRateLimitState } from "../../security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
+import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL unset — run via `npm run test:integration`");
@@ -46,6 +47,7 @@ beforeEach(async () => {
     `TRUNCATE "AdminAuditLog","PromoRedemption","PromoCode","Checkout","Subscription","User" RESTART IDENTITY CASCADE`,
   );
   _resetRateLimitState();
+  await resetControlPlane(prisma);
 });
 
 afterEach(() => {
@@ -53,7 +55,7 @@ afterEach(() => {
 });
 
 async function makeUser(role: "USER" | "SUPER_ADMIN" | "BILLING_ADMIN" = "USER") {
-  return prisma.user.create({ data: { email: `${randomUUID()}@example.com`, role } });
+  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role });
 }
 function signInAs(user: { id: string; email: string; role: string }) {
   vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: user.role as never });
