@@ -13,6 +13,12 @@
 # directly and paste its connection string into DATABASE_URL below via the
 # Render dashboard — never into this file.
 #
+# DATABASE_URL form: append `?options=-c search_path=store_spy,public`
+# (URL-encoded: `?options=-c%20search_path%3Dstore_spy%2Cpublic`) and do NOT
+# include `?schema=`. App tables live in the `store_spy` schema since the
+# control-plane split; `?schema=` breaks either runtime raw SQL or
+# `prisma migrate`. Full rationale in docs/environment-variables.md.
+#
 # Every envVar below uses `sync: false`, meaning Render stores the real value
 # only in its own dashboard/secret store — this file never contains one.
 # See docs/environment-variables.md for what each variable protects and how

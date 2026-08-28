@@ -1,9 +1,14 @@
 # Integration test harness
 #
 #   docker compose -f docker-compose.test.yml up -d
-#   DATABASE_URL="postgresql://app:app@localhost:5433/ecom_intel_test?schema=public" \
+#   DATABASE_URL="postgresql://app:app@localhost:5433/ecom_intel_test?options=-c%20search_path%3Dstore_spy%2Cpublic" \
 #     npx prisma migrate deploy
 #   npm run test:integration
+#
+# The DATABASE_URL form matters: app tables live in the `store_spy` schema
+# (control-plane split), so raw SQL needs it in search_path — but `?schema=`
+# would break either the runtime raw SQL or `prisma migrate`. See
+# .env.test.example.
 #
 # Port 5433 deliberately, so this never collides with a local dev Postgres.
 # tmpfs storage: the DB is disposable and this makes the suite noticeably faster.

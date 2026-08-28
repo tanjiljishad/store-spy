@@ -19,8 +19,13 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  // Order is cosmetic only. Every model and enum now carries an explicit
-  // @@schema(...) — nothing lands in `public` any more.
+  // Order is cosmetic only. Every model and enum carries an explicit
+  // @@schema(...) — nothing lands in `public` except _prisma_migrations.
+  //
+  // DATABASE_URL must set search_path (store_spy first, then public) via
+  // `?options=-c search_path=store_spy,public` and must NOT set `?schema=`.
+  // Raw SQL uses bare names resolved via search_path; `?schema=` pins it and
+  // Prisma then ignores `options`. See docs/environment-variables.md.
   schemas  = ["control_plane", "store_spy"]
 }
 
