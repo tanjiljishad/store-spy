@@ -19,7 +19,6 @@ vi.mock("@/lib/auth/session", () => {
 vi.mock("@/lib/email/verification-email", () => ({ sendVerificationEmail: vi.fn() }));
 
 import { PrismaClient } from "@prisma/client";
-import { NextRequest } from "next/server";
 import { randomUUID } from "node:crypto";
 import { POST as resendVerification } from "../../../app/api/auth/resend-verification/route";
 import { _resetRateLimitState } from "../../security/rate-limit";
@@ -39,10 +38,6 @@ beforeEach(async () => {
   vi.mocked(sendVerificationEmail).mockResolvedValue(undefined);
   await resetControlPlane(prisma);
 });
-
-function req(): NextRequest {
-  return new NextRequest("http://localhost/api/auth/resend-verification", { method: "POST" });
-}
 async function makeUnverifiedUser() {
   return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
 }
@@ -50,7 +45,7 @@ async function makeUnverifiedUser() {
 describe("POST /api/auth/resend-verification", () => {
   it("401s an anonymous caller", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(null);
-    const res = await resendVerification(req());
+    const res = await resendVerification();
     expect(res.status).toBe(401);
     expect(sendVerificationEmail).not.toHaveBeenCalled();
   });
@@ -59,18 +54,19 @@ describe("POST /api/auth/resend-verification", () => {
     const user = await makeUnverifiedUser();
     vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
-    const res = await resendVerification(req());
+    const res = await resendVerification();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ status: "sent" });
-    expect(sendVerificationEmail).toHaveBeenCalledWith(expect.any(String), user.id, user.email);
+    // Audit fix M-2: no request-origin arg — the link origin is APP_URL.
+    expect(sendVerificationEmail).toHaveBeenCalledWith(user.id, user.email);
   });
 
   it("does not send, and reports already_verified, for an already-verified account", async () => {
     const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, emailVerified: new Date() });
     vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
-    const res = await resendVerification(req());
+    const res = await resendVerification();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ status: "already_verified" });
@@ -82,7 +78,7 @@ describe("POST /api/auth/resend-verification", () => {
     vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
     vi.mocked(sendVerificationEmail).mockRejectedValue(new Error("Resend API error"));
 
-    const res = await resendVerification(req());
+    const res = await resendVerification();
     expect(res.status).toBe(502);
   });
 
@@ -92,7 +88,7 @@ describe("POST /api/auth/resend-verification", () => {
 
     let last: Response | undefined;
     for (let i = 0; i < 5; i++) {
-      last = await resendVerification(req());
+      last = await resendVerification();
     }
     expect(last!.status).toBe(429);
   });

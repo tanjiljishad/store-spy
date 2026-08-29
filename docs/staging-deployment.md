@@ -406,6 +406,7 @@ the **web container will not start** without it.
 | `TRUSTED_PROXY_HOPS` | ✅ | — | **Yes** | **No default; web boot-fails without it.** Number of trusted reverse-proxy hops. `1` for the Contabo topology (one Caddy/nginx), `2` with a CDN in front, `0` only if nothing proxies the process. See "Host hardening". |
 | `AUTH_SECRET` | ✅ | — | **Yes** | `openssl rand -base64 32`, unique per environment. Worker's import chain never touches Auth.js — verified unset-safe there. |
 | `AUTH_TRUST_HOST` | ✅ | — | **Yes** (non-Vercel host) | `"true"`. Without it every Auth.js endpoint fails closed with `UntrustedHost`. |
+| `APP_URL` | ✅ | — | **Yes** | The canonical public origin (`https://app.example.com`). Used to build absolute links in outbound email — never the request `Host` (audit fix M-2). **Fail-closed**: unset/invalid ⇒ no verification email sent. |
 | `CONTROL_PLANE_INTERNAL_SECRET` | ✅ | — | **Yes** | Gates `GET /api/internal/entitlements` (constant-time compare). **Fail-closed** (503) if unset. `openssl rand -base64 32`. |
 | `SCHEDULER_SECRET` | ✅ | — | **Yes** in practice | Gates `POST /api/internal/scheduler/{tick,marketing-tick}` and `/api/internal/debug/headers`. **Fail-closed** (503 / 404) if unset. The worker ticks in-process and does not need it, but any operator/monitor trigger does. `openssl rand -base64 32`. |
 | `TURNSTILE_SECRET_KEY` | ✅ | — | **Yes** (for anonymous analysis) | Server-side Turnstile verification for anonymous `POST /api/analyze`. **Fail-closed**: unset ⇒ every anonymous request rejected (never skipped). |

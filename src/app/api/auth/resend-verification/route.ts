@@ -1,4 +1,3 @@
-import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { requireUser, UnauthorizedError } from "@/lib/auth/session";
 import { sendVerificationEmail } from "@/lib/email/verification-email";
@@ -11,9 +10,10 @@ const RATE_LIMIT = { limit: 3, windowMs: 60_000 };
 /**
  * The /verify-email interstitial's "resend" button target. Requires a
  * signed-in session (unlike the signup route, this account already exists)
- * — same requireUser() pattern as /api/account/consent.
+ * — same requireUser() pattern as /api/account/consent. Takes no request
+ * body; the link origin is APP_URL, not the request Host (audit fix M-2).
  */
-export async function POST(req: NextRequest) {
+export async function POST() {
   let actor;
   try {
     actor = await requireUser();
@@ -33,7 +33,9 @@ export async function POST(req: NextRequest) {
   if (fresh.emailVerifiedAt) return Response.json({ status: "already_verified" });
 
   try {
-    await sendVerificationEmail(req.nextUrl.origin, actor.id, fresh.email);
+    // Link origin is APP_URL, never req.nextUrl.origin — see
+    // verification-email.ts (audit fix M-2).
+    await sendVerificationEmail(actor.id, fresh.email);
   } catch (e) {
     console.error("[api/auth/resend-verification] sendVerificationEmail failed:", e);
     return Response.json({ error: "Could not send the email right now. Please try again shortly." }, { status: 502 });

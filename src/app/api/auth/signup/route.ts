@@ -135,7 +135,9 @@ export async function POST(req: NextRequest) {
     // on /verify-email (DashboardLayout/AdminLayout redirect there until
     // emailVerified is set).
     try {
-      await sendVerificationEmail(req.nextUrl.origin, user.id, user.email);
+      // Link origin is APP_URL, never req.nextUrl.origin (Host is
+      // attacker-controlled) — see verification-email.ts (audit fix M-2).
+      await sendVerificationEmail(user.id, user.email);
     } catch (e) {
       console.error("[api/auth/signup] sendVerificationEmail failed (non-fatal):", e);
     }

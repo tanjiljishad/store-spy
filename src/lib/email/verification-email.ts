@@ -2,27 +2,52 @@ import { generateEmailVerificationToken } from "../auth/email-verification-token
 import { sendEmail } from "./resend-client";
 
 /**
- * `baseUrl` is the ORIGIN of the request that triggered the send (e.g.
- * `req.nextUrl.origin` from the signup / resend-verification routes) — not
- * a dedicated env var. This app has no staging/production deploy yet (see
- * docs/environment-variables.md), and the origin the request actually
- * arrived on is already the correct link target in every environment
- * without needing a new var to keep in sync per environment.
+ * The public origin every mailed link is built against — `APP_URL`, a fixed
+ * env var, NEVER the incoming request's `Host` header.
+ *
+ * Audit fix M-2: this used to take `baseUrl` from `req.nextUrl.origin` at the
+ * signup / resend-verification routes. `Host` is attacker-controlled, so a
+ * signup for `victim@example.com` sent with `Host: attacker.tld` produced a
+ * confirmation link pointing at the attacker — and the token is a
+ * deterministic HMAC (see email-verification-token.ts), so a captured link
+ * stayed valid. Pinning to `APP_URL` removes the request from the equation.
+ *
+ * Fail-closed, same posture as EMAIL_VERIFICATION_TOKEN_SECRET: an unset or
+ * malformed `APP_URL` yields `null` (no link, no email) rather than a link
+ * against some guessed origin. `docs/environment-variables.md` lists it as
+ * required in staging/production.
  */
-export function buildVerificationUrl(baseUrl: string, userId: string, email: string): string | null {
+function appOrigin(): string | null {
+  const raw = process.env.APP_URL;
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Null if `APP_URL` or `EMAIL_VERIFICATION_TOKEN_SECRET` is missing/invalid — callers must treat that as "cannot mail a working link," never emit a broken one. */
+export function buildVerificationUrl(userId: string, email: string): string | null {
+  const origin = appOrigin();
+  if (!origin) return null;
   const token = generateEmailVerificationToken(userId, email);
   if (!token) return null;
-  const url = new URL("/verify-email", baseUrl);
+  const url = new URL("/verify-email", origin);
   url.searchParams.set("uid", userId);
   url.searchParams.set("token", token);
   return url.toString();
 }
 
-/** Throws if EMAIL_VERIFICATION_TOKEN_SECRET is unset or the send itself fails — callers decide whether that's fatal (see the signup route's non-fatal try/catch vs. the resend route's 502). */
-export async function sendVerificationEmail(baseUrl: string, userId: string, email: string): Promise<void> {
-  const url = buildVerificationUrl(baseUrl, userId, email);
+/** Throws if `APP_URL` / `EMAIL_VERIFICATION_TOKEN_SECRET` is unset or the send itself fails — callers decide whether that's fatal (see the signup route's non-fatal try/catch vs. the resend route's 502). */
+export async function sendVerificationEmail(userId: string, email: string): Promise<void> {
+  const url = buildVerificationUrl(userId, email);
   if (!url) {
-    throw new Error("Cannot send verification email — EMAIL_VERIFICATION_TOKEN_SECRET is not set.");
+    throw new Error(
+      "Cannot send verification email — APP_URL or EMAIL_VERIFICATION_TOKEN_SECRET is not set (see docs/environment-variables.md).",
+    );
   }
 
   await sendEmail({
