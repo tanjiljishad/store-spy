@@ -43,9 +43,9 @@ describe("searchUsers plan/role filters and sort", () => {
 
   it("defaults to createdAt descending, and sort=createdAt_asc reverses it", async () => {
     const older = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-    await prisma.user.update({ where: { id: older.id }, data: { createdAt: new Date("2026-01-01T00:00:00Z") } });
+    await prisma.cpUser.update({ where: { id: older.id }, data: { createdAt: new Date("2026-01-01T00:00:00Z") } });
     const newer = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-    await prisma.user.update({ where: { id: newer.id }, data: { createdAt: new Date("2026-06-01T00:00:00Z") } });
+    await prisma.cpUser.update({ where: { id: newer.id }, data: { createdAt: new Date("2026-06-01T00:00:00Z") } });
 
     const desc = await searchUsers(prisma);
     expect(desc.items.map((u) => u.id)).toEqual([newer.id, older.id]);

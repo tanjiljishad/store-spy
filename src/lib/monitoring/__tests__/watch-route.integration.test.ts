@@ -91,9 +91,9 @@ describe("POST /api/store/[domain]/watch", () => {
     expect(body.status).toBe("ACTIVE");
     // Milestone 12 §1.4: a FREE watch now carries the account's trial
     // ceiling (min(freeTrialEndsAt, watchExpiry), watchExpiry itself still
-    // null) rather than never expiring at all.
-    const freshUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(body.expiresAt).toBe(freshUser.freeTrialEndsAt!.toISOString());
+    // null) rather than never expiring at all. The trial end is the subt_
+    // subscription's period_end — the value makeStoreSpyUser echoes back.
+    expect(body.expiresAt).toBe(user.freeTrialEndsAt.toISOString());
   });
 
   it("returns the structured entitlement-denied shape, not a raw 500, once the free slot is used", async () => {
@@ -130,8 +130,7 @@ describe("POST /api/store/[domain]/watch", () => {
     // The real point this test makes still holds: the attacker-supplied
     // 2099 date is ignored — it's server-computed (the trial ceiling,
     // Milestone 12 §1.4), never the spoofed value.
-    const freshUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(watch.monitoringExpiresAt!.getTime()).toBe(freshUser.freeTrialEndsAt!.getTime());
+    expect(watch.monitoringExpiresAt!.getTime()).toBe(user.freeTrialEndsAt.getTime());
     expect(watch.monitoringExpiresAt!.getFullYear()).not.toBe(2099);
     expect(watch.userId).toBe(user.id); // never the spoofed "someone-elses-id"
   });

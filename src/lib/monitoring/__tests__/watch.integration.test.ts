@@ -25,12 +25,11 @@ describe("monitoring entitlements", () => {
 
     const watch = await prisma.watchlist.findUniqueOrThrow({ where: { userId_storeId: { userId: account.id, storeId: a.id } } });
     // Milestone 12 §1.4: unlike pre-M12 (no expiry at all), a FREE watch now
-    // carries the account's trial ceiling — never null, and equal to
-    // freeTrialEndsAt since monitoringDurationDays(FREE) is itself null
-    // (min(freeTrialEndsAt, null) == freeTrialEndsAt).
-    const freshUser = await prisma.user.findUniqueOrThrow({ where: { id: account.id } });
+    // carries the account's trial ceiling — never null, and equal to the
+    // subt_ subscription's period_end (makeStoreSpyUser's echo) since
+    // monitoringDurationDays(FREE) is itself null (min(trialEnd, null) == trialEnd).
     expect(watch.monitoringExpiresAt).not.toBeNull();
-    expect(watch.monitoringExpiresAt!.getTime()).toBe(freshUser.freeTrialEndsAt!.getTime());
+    expect(watch.monitoringExpiresAt!.getTime()).toBe(account.freeTrialEndsAt.getTime());
   });
 
   // Milestone 12 §1.4 acceptance criterion: "A FREE user's watch expires
@@ -81,7 +80,8 @@ describe("monitoring entitlements", () => {
     const beforeUpgrade = await prisma.watchlist.findUniqueOrThrow({ where: { userId_storeId: { userId: account.id, storeId: watched.id } } });
     expect(beforeUpgrade.monitoringExpiresAt).not.toBeNull();
 
-    await prisma.user.update({ where: { id: account.id }, data: { plan: "BASIC" } });
+    // The upgrade itself is exercised elsewhere; this test is only about
+    // clearTrialCeiling lifting the ceiling off existing watches.
     await clearTrialCeiling(prisma, account.id);
 
     const afterUpgrade = await prisma.watchlist.findUniqueOrThrow({ where: { userId_storeId: { userId: account.id, storeId: watched.id } } });

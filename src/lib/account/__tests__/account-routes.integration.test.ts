@@ -96,7 +96,7 @@ describe("POST /api/account/delete", () => {
     const wrong = await deleteAccount(deleteReq({ confirmEmail: "someone-else@example.com" }));
     expect(wrong.status).toBe(400);
 
-    expect(await prisma.user.findUnique({ where: { id: user.id } })).not.toBeNull(); // never deleted
+    expect(await prisma.cpUser.findUnique({ where: { id: user.id } })).not.toBeNull(); // never deleted
   });
 
   it("deletes the account when confirmEmail matches (case/whitespace-insensitive)", async () => {
@@ -105,7 +105,7 @@ describe("POST /api/account/delete", () => {
 
     const res = await deleteAccount(deleteReq({ confirmEmail: "  real.USER@example.COM  " }));
     expect(res.status).toBe(200);
-    expect(await prisma.user.findUnique({ where: { id: user.id } })).toBeNull();
+    expect(await prisma.cpUser.findUnique({ where: { id: user.id } })).toBeNull();
   });
 
   it("409s a lone SUPER_ADMIN attempting to delete themselves, via the real HTTP route", async () => {
@@ -114,6 +114,6 @@ describe("POST /api/account/delete", () => {
 
     const res = await deleteAccount(deleteReq({ confirmEmail: admin.email }));
     expect(res.status).toBe(409);
-    expect(await prisma.user.findUnique({ where: { id: admin.id } })).not.toBeNull();
+    expect(await prisma.cpUser.findUnique({ where: { id: admin.id } })).not.toBeNull();
   });
 });

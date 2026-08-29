@@ -40,7 +40,7 @@ describe("deleteOwnAccount", () => {
     const result = await deleteOwnAccount(prisma, user.id);
     expect(result.outcome).toBe("deleted");
 
-    expect(await prisma.user.findUnique({ where: { id: user.id } })).toBeNull();
+    expect(await prisma.cpUser.findUnique({ where: { id: user.id } })).toBeNull();
     expect(await prisma.watchlist.count({ where: { userId: user.id } })).toBe(0);
     expect(await prisma.analysisUsage.count({ where: { userId: user.id } })).toBe(0);
     expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
@@ -68,7 +68,7 @@ describe("deleteOwnAccount", () => {
 
     await deleteOwnAccount(prisma, target.id);
 
-    expect(await prisma.user.findUnique({ where: { id: bystander.id } })).not.toBeNull();
+    expect(await prisma.cpUser.findUnique({ where: { id: bystander.id } })).not.toBeNull();
     expect(await prisma.watchlist.count({ where: { userId: bystander.id } })).toBe(1);
     expect(await prisma.subscription.count({ where: { userId: bystander.id } })).toBe(1);
   });
@@ -146,7 +146,7 @@ describe("deleteOwnAccount", () => {
       const onlyAdmin = await makeUser("SUPER_ADMIN");
       const result = await deleteOwnAccount(prisma, onlyAdmin.id);
       expect(result).toEqual({ outcome: "last_super_admin" });
-      expect(await prisma.user.findUnique({ where: { id: onlyAdmin.id } })).not.toBeNull();
+      expect(await prisma.cpUser.findUnique({ where: { id: onlyAdmin.id } })).not.toBeNull();
     });
 
     it("allows deleting a SUPER_ADMIN when another one still exists", async () => {
@@ -164,7 +164,7 @@ describe("deleteOwnAccount", () => {
 
       const outcomes = [r1.outcome, r2.outcome].sort();
       expect(outcomes).toEqual(["deleted", "last_super_admin"]);
-      expect(await prisma.user.count({ where: { role: "SUPER_ADMIN" } })).toBe(1);
+      expect(await prisma.userAdminRole.count({ where: { role: "SUPER_ADMIN" } })).toBe(1);
     });
   });
 });

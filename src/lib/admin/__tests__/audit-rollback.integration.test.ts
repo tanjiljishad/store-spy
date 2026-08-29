@@ -67,8 +67,8 @@ describe("admin writes pair with exactly one audit row, atomically", () => {
 
     await expect(updateUserRole(prisma, actor, target.id, "SUPPORT_ADMIN")).rejects.toThrow("simulated audit write failure");
 
-    const stillTarget = await prisma.user.findUniqueOrThrow({ where: { id: target.id } });
-    expect(stillTarget.role).toBe("USER"); // rolled back — never persisted despite the update running first
+    // Rolled back — no UserAdminRole row was persisted despite the write running first.
+    expect(await prisma.userAdminRole.findUnique({ where: { userId: target.id } })).toBeNull();
     const rows = await prisma.adminAuditLog.count({ where: { targetId: target.id } });
     expect(rows).toBe(0);
   });
@@ -92,8 +92,9 @@ describe("admin writes pair with exactly one audit row, atomically", () => {
 
     await expect(updateUserPlanWithAudit(prisma, actor, target.id, "BASIC")).rejects.toThrow("simulated audit write failure");
 
-    const stillTarget = await prisma.user.findUniqueOrThrow({ where: { id: target.id } });
-    expect(stillTarget.plan).toBe("FREE");
+    // Rolled back — the control-plane subscription is still FREE.
+    const sub = await prisma.cpSubscription.findFirstOrThrow({ where: { accountId: `acct_${target.id}`, status: { in: ["ACTIVE", "TRIALING"] } }, select: { planSlug: true } });
+    expect(sub.planSlug).toBe("FREE");
     const rows = await prisma.adminAuditLog.count({ where: { targetId: target.id } });
     expect(rows).toBe(0);
   });
@@ -117,7 +118,7 @@ describe("admin writes pair with exactly one audit row, atomically", () => {
 
     await expect(revokeUserSessions(prisma, actor, target.id)).rejects.toThrow("simulated audit write failure");
 
-    const stillTarget = await prisma.user.findUniqueOrThrow({ where: { id: target.id } });
+    const stillTarget = await prisma.cpUser.findUniqueOrThrow({ where: { id: target.id } });
     expect(stillTarget.sessionsValidAfter).toBeNull();
     const rows = await prisma.adminAuditLog.count({ where: { targetId: target.id } });
     expect(rows).toBe(0);
