@@ -207,7 +207,7 @@ was interrupted before its prune: `docker image prune -f && docker builder prune
 2. **Connect this repository to Render** as a Blueprint (`render.yaml` at the
    repo root, already committed — Render detects it automatically when
    creating a new Blueprint instance from this repo). Do the "Build & image"
-   prerequisites above first (real `OWNER/REPO`, GHCR credential).
+   prerequisites above first (real `ghcr.io/tanjiljishad/store-spy:latest`
 3. **Set the real env var values** for both services in the Render dashboard
    (never in `render.yaml` — every variable there is `sync: false`
    deliberately). Use the checklist below.

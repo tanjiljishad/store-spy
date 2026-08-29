@@ -38,7 +38,7 @@ services:
     # or a CI deploy hook.
     runtime: image
     image:
-      url: ghcr.io/OWNER/REPO:latest
+      url: ghcr.io/tanjiljishad/store-spy:latest
     # No preDeployCommand and no startCommand: the image's ENTRYPOINT runs
     # `prisma migrate deploy` then `node server.js` for the default `web` role,
     # and healthCheckPath below only goes green once that server is answering —
