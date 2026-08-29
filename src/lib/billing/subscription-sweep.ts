@@ -2,7 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { maxActiveMonitoredStores } from "../entitlements/entitlement-service";
 import { recomputeStoreTier } from "../monitoring/watch";
 import { recordAdminAction } from "../admin/audit";
-import { syncControlPlanePlan } from "../control-plane/provision";
+import { resolveTrialEnd, syncControlPlanePlan } from "../control-plane/provision";
 
 /**
  * Milestone 11 Phase 3 §3.4 amendment (post-Phase-2 review): the original
@@ -92,22 +92,15 @@ async function expireOneSubscription(prisma: PrismaClient, subscriptionId: strin
 
     await tx.subscription.update({ where: { id: subscriptionId }, data: { status: "EXPIRED" } });
 
-    // TRANSITIONAL (B2 step 2·B): the User.plan write. 2·A keeps it next to the
-    // control-plane write below; 2·B drops it.
-    const downgraded = await tx.user.update({
-      where: { id: current.userId },
-      data: { plan: "FREE" },
-      select: { freeTrialEndsAt: true },
-    });
-
-    // B2 step 2·A dual-write: rebuild the account's control-plane FREE
-    // subscriptions. The returning FREE user's trial window is whatever it
-    // always was (usually already past) — `verify:b2-step1` gates that this
-    // agrees with plan-limits.ts.
+    // B2 2·B: plan lives in the control plane only. Rebuild the account's FREE
+    // subscriptions; the returning FREE user's monitoring-trial window is
+    // whatever it always was — resolveTrialEnd() (createdAt + 30d for an
+    // account that had no trial subscription, i.e. this one), usually already
+    // past.
     await syncControlPlanePlan(tx, {
       userId: current.userId,
       plan: "FREE",
-      trialEndsAt: downgraded.freeTrialEndsAt,
+      trialEndsAt: await resolveTrialEnd(tx, current.userId),
       paidPeriodEnd: null,
     });
 

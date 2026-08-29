@@ -107,3 +107,28 @@ export async function resolveEntitlement(
         cmp(a.id, b.id), // then row id — a total order, so always deterministic
     )[0].result;
 }
+
+/**
+ * The tier the account BOUGHT — `control_plane.subscriptions.plan_slug`,
+ * returned verbatim. A COARSE label for display and the upgrade-prompt hint.
+ *
+ * NOT an access check. "Purchased" and "currently effective" can diverge: a
+ * lapsed paid subscription still reads `"BASIC"` here even though
+ * `resolveEntitlement()` correctly reports it as `subscription_inactive`.
+ * Any caller gating a feature — or deciding what to offer on an upgrade page —
+ * MUST call `resolveEntitlement()` per feature, never this.
+ *
+ * Falls back to `"FREE"` only if the account has no live subscription row at
+ * all (should not happen for a provisioned account).
+ */
+export async function getPurchasedPlanSlug(
+  prisma: Pick<PrismaClient, "cpSubscription">,
+  userId: string,
+): Promise<"FREE" | "BASIC" | "BUSINESS"> {
+  const sub = await prisma.cpSubscription.findFirst({
+    where: { accountId: `acct_${userId}`, status: { in: ["ACTIVE", "TRIALING"] } },
+    orderBy: { createdAt: "desc" },
+    select: { planSlug: true },
+  });
+  return (sub?.planSlug as "FREE" | "BASIC" | "BUSINESS" | undefined) ?? "FREE";
+}

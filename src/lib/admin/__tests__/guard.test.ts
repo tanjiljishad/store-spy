@@ -39,7 +39,7 @@ import { requirePermission, withAdminRoute } from "../guard";
 import { getCurrentUser } from "@/lib/auth/session";
 
 function signIn(role: string, id = "u1") {
-  vi.mocked(getCurrentUser).mockResolvedValue({ id, email: `${id}@example.com`, plan: "FREE", role: role as never });
+  vi.mocked(getCurrentUser).mockResolvedValue({ id, email: `${id}@example.com`, role: role as never });
 }
 function signOut() {
   vi.mocked(getCurrentUser).mockResolvedValue(null);

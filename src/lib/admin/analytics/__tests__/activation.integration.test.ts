@@ -9,7 +9,7 @@ if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "Watchlist","AnalysisUsage","Session","Account","Store","User" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "Watchlist","AnalysisUsage","Session","Account","Store" RESTART IDENTITY CASCADE`);
   await resetControlPlane(prisma);
 });
 
@@ -18,7 +18,7 @@ const WINDOW_END = new Date("2026-08-08T00:00:00Z");
 
 async function makeUser(createdAt: Date) {
   const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-  await prisma.user.update({ where: { id: user.id }, data: { createdAt } });
+  await prisma.cpUser.update({ where: { id: user.id }, data: { createdAt } });
   return user;
 }
 async function makeStore() {

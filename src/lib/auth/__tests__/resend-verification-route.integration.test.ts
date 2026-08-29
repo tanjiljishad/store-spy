@@ -32,7 +32,7 @@ if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with
 const prisma = new PrismaClient();
 
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "Session","Account","User" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "Session","Account" RESTART IDENTITY CASCADE`);
   _resetRateLimitState();
   vi.mocked(getCurrentUser).mockReset();
   vi.mocked(sendVerificationEmail).mockReset();
@@ -57,7 +57,7 @@ describe("POST /api/auth/resend-verification", () => {
 
   it("sends and returns 200 for a signed-in, unverified account", async () => {
     const user = await makeUnverifiedUser();
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const res = await resendVerification(req());
     expect(res.status).toBe(200);
@@ -68,7 +68,7 @@ describe("POST /api/auth/resend-verification", () => {
 
   it("does not send, and reports already_verified, for an already-verified account", async () => {
     const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, emailVerified: new Date() });
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const res = await resendVerification(req());
     expect(res.status).toBe(200);
@@ -79,7 +79,7 @@ describe("POST /api/auth/resend-verification", () => {
 
   it("returns 502 when the send itself fails, without crashing", async () => {
     const user = await makeUnverifiedUser();
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
     vi.mocked(sendVerificationEmail).mockRejectedValue(new Error("Resend API error"));
 
     const res = await resendVerification(req());
@@ -88,7 +88,7 @@ describe("POST /api/auth/resend-verification", () => {
 
   it("rate limits repeated requests from the same account", async () => {
     const user = await makeUnverifiedUser();
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     let last: Response | undefined;
     for (let i = 0; i < 5; i++) {

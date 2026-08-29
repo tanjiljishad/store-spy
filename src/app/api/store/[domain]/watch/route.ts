@@ -5,7 +5,7 @@ import { checkRateLimit, getClientIp } from "@/lib/security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
 import { startMonitoring, stopMonitoring } from "@/lib/monitoring/watch";
 import { limitReached } from "@/lib/entitlements/limit-reached";
-import type { PlanTier } from "@/lib/entitlements/plan-limits";
+import { getPurchasedPlanSlug } from "@/lib/control-plane/entitlements";
 
 /**
  * Starts/stops the CALLER's monitoring relationship with a store. Requires
@@ -39,7 +39,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ dom
     return Response.json({ error: "Store not found" }, { status: 404 });
   }
 
-  const plan = user.plan as PlanTier;
+  // Coarse purchased-tier label — drives the FREE-vs-paid watch-duration
+  // branch and the response envelope; the slot GATE is resolveEntitlement
+  // inside startMonitoring().
+  const plan = await getPurchasedPlanSlug(prisma, user.id);
   const result = await startMonitoring(prisma, user.id, store.id, plan);
 
   if (result.outcome === "trial_expired") {

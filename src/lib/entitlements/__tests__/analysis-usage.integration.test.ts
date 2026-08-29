@@ -18,7 +18,7 @@ if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","User","Store" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","Store" RESTART IDENTITY CASCADE`);
   await resetControlPlane(prisma);
 });
 async function makeUser(plan: "FREE" | "BASIC" | "BUSINESS" = "FREE") { return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan }); }
@@ -28,15 +28,15 @@ describe("analysis usage ledger under the freemium model", () => {
   it("lets FREE analyze up to its 10/24h limit across distinct stores", async () => {
     const user = await makeUser();
     const stores = await Promise.all(Array.from({ length: 5 }, makeStore));
-    for (const store of stores) expect((await recordAnalysisUsage(prisma, user.id, store.id, "FREE")).outcome).toBe("recorded");
+    for (const store of stores) expect((await recordAnalysisUsage(prisma, user.id, store.id)).outcome).toBe("recorded");
     expect(await getAnalysisUsage(prisma, user.id)).toMatchObject({ used: 5, limit: 10 });
   });
 
   it("D2: a repeat analysis of the same store WITHIN the window does not consume a credit", async () => {
     const user = await makeUser();
     const store = await makeStore();
-    await recordAnalysisUsage(prisma, user.id, store.id, "FREE");
-    expect((await recordAnalysisUsage(prisma, user.id, store.id, "FREE")).outcome).toBe("already_counted");
+    await recordAnalysisUsage(prisma, user.id, store.id);
+    expect((await recordAnalysisUsage(prisma, user.id, store.id)).outcome).toBe("already_counted");
     expect((await getAnalysisUsage(prisma, user.id)).used).toBe(1);
   });
 
@@ -48,7 +48,7 @@ describe("analysis usage ledger under the freemium model", () => {
     // yesterday, revisited today" without waiting a real day.
     await prisma.analysisUsage.update({ where: { id: firstRow.id }, data: { createdAt: new Date(Date.now() - 25 * 60 * 60_000) } });
 
-    const result = await recordAnalysisUsage(prisma, user.id, store.id, "FREE");
+    const result = await recordAnalysisUsage(prisma, user.id, store.id);
     expect(result.outcome).toBe("recorded"); // NOT already_counted — the old row fell outside the window
     expect(await prisma.analysisUsage.count({ where: { userId: user.id } })).toBe(2);
     // The windowed count only sees the fresh row — the backdated one is outside the window.
@@ -60,11 +60,11 @@ describe("analysis usage ledger under the freemium model", () => {
     const stores = await Promise.all(Array.from({ length: 11 }, makeStore));
 
     for (let i = 0; i < 10; i++) {
-      const result = await recordAnalysisUsage(prisma, user.id, stores[i].id, "FREE");
+      const result = await recordAnalysisUsage(prisma, user.id, stores[i].id);
       expect(result.outcome).toBe("recorded");
     }
 
-    const eleventh = await recordAnalysisUsage(prisma, user.id, stores[10].id, "FREE");
+    const eleventh = await recordAnalysisUsage(prisma, user.id, stores[10].id);
     expect(eleventh).toMatchObject({ outcome: "limit_reached", current: 10, max: 10 });
     if (eleventh.outcome !== "limit_reached") throw new Error("unreachable");
     expect(eleventh.resetsAt).not.toBeNull();
@@ -83,8 +83,8 @@ describe("analysis usage ledger under the freemium model", () => {
     expect(await getAnalysisUsage(prisma, basicUser.id)).toMatchObject({ used: 0, limit: 50 });
     expect(await getAnalysisUsage(prisma, businessUser.id)).toMatchObject({ used: 0, limit: 100 });
 
-    await recordAnalysisUsage(prisma, basicUser.id, basicStore.id, "BASIC");
-    await recordAnalysisUsage(prisma, businessUser.id, businessStore.id, "BUSINESS");
+    await recordAnalysisUsage(prisma, basicUser.id, basicStore.id);
+    await recordAnalysisUsage(prisma, businessUser.id, businessStore.id);
     expect((await getAnalysisUsage(prisma, basicUser.id)).used).toBe(1);
     expect((await getAnalysisUsage(prisma, businessUser.id)).used).toBe(1);
   });
@@ -94,14 +94,14 @@ describe("analysis usage ledger under the freemium model", () => {
     // Consume 9 of FREE's 10 credits up front, leaving exactly one slot.
     const usedStores = await Promise.all(Array.from({ length: 9 }, makeStore));
     for (const store of usedStores) {
-      const result = await recordAnalysisUsage(prisma, user.id, store.id, "FREE");
+      const result = await recordAnalysisUsage(prisma, user.id, store.id);
       expect(result.outcome).toBe("recorded");
     }
 
     const [storeA, storeB] = await Promise.all([makeStore(), makeStore()]);
     const [resultA, resultB] = await Promise.all([
-      recordAnalysisUsage(prisma, user.id, storeA.id, "FREE"),
-      recordAnalysisUsage(prisma, user.id, storeB.id, "FREE"),
+      recordAnalysisUsage(prisma, user.id, storeA.id),
+      recordAnalysisUsage(prisma, user.id, storeB.id),
     ]);
 
     const outcomes = [resultA.outcome, resultB.outcome].sort();

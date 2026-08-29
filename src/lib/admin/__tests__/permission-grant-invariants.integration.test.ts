@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "AdminPermissionGrant","AdminAuditLog","Session","Account","User" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "AdminPermissionGrant","AdminAuditLog","Session","Account" RESTART IDENTITY CASCADE`);
   _resetRateLimitState();
   await resetControlPlane(prisma);
 });
@@ -87,11 +87,11 @@ function ctxWithPermission(id: string, permission: string) {
 
 /** Fires postPermission as `actor` targeting `targetId` — signs in fresh right before the call, since mocks are shared, not per-request. */
 async function grantAs(actor: { id: string; email: string; role: string }, targetId: string, body: unknown) {
-  vi.mocked(getCurrentUser).mockResolvedValueOnce({ id: actor.id, email: actor.email, plan: "FREE", role: actor.role as never });
+  vi.mocked(getCurrentUser).mockResolvedValueOnce({ id: actor.id, email: actor.email, role: actor.role as never });
   return postPermission(req(body), ctx(targetId));
 }
 async function revokeAs(actor: { id: string; email: string; role: string }, targetId: string, permission: string) {
-  vi.mocked(getCurrentUser).mockResolvedValueOnce({ id: actor.id, email: actor.email, plan: "FREE", role: actor.role as never });
+  vi.mocked(getCurrentUser).mockResolvedValueOnce({ id: actor.id, email: actor.email, role: actor.role as never });
   return deletePermission(deleteReq(), ctxWithPermission(targetId, permission));
 }
 
@@ -210,7 +210,7 @@ describe("DELETE /api/admin/users/[id]/permissions/[permission] — revoke", () 
 describe("GET /api/admin/users/[id]/permissions — effective set, role-derived vs granted", () => {
   it("requires user:read", async () => {
     const actor = await makeUser("USER");
-    vi.mocked(getCurrentUser).mockResolvedValueOnce({ id: actor.id, email: actor.email, plan: "FREE", role: "USER" as never });
+    vi.mocked(getCurrentUser).mockResolvedValueOnce({ id: actor.id, email: actor.email, role: "USER" as never });
 
     const res = await getPermissions(req(), ctx(actor.id));
     expect(res.status).toBe(403);
@@ -222,7 +222,7 @@ describe("GET /api/admin/users/[id]/permissions — effective set, role-derived 
     const target = await makeUser("CONTENT_ADMIN"); // role-derived: metrics:read, user:read
     await grantAs(admin, target.id, { permission: "crawl:retry" });
 
-    vi.mocked(getCurrentUser).mockResolvedValueOnce({ id: reader.id, email: reader.email, plan: "FREE", role: "BILLING_ADMIN" as never });
+    vi.mocked(getCurrentUser).mockResolvedValueOnce({ id: reader.id, email: reader.email, role: "BILLING_ADMIN" as never });
     const res = await getPermissions(req(), ctx(target.id));
     expect(res.status).toBe(200);
     const body = await res.json();

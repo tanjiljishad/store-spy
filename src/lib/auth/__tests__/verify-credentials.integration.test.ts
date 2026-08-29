@@ -22,7 +22,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "Session","Account","User" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "Session","Account" RESTART IDENTITY CASCADE`);
   await resetControlPlane(prisma);
 });
 
@@ -56,7 +56,7 @@ describe("verifyCredentials", () => {
 
   it("returns null for an OAuth-only user (no passwordHash) — never crashes on a null hash", async () => {
     const email = `${randomUUID()}@example.com`;
-    await makeStoreSpyUser(prisma, { email }); // no passwordHash — as if created via Google sign-in
+    await makeStoreSpyUser(prisma, { email, passwordHash: null }); // as if created via Google sign-in
 
     expect(await verifyCredentials(prisma, email, "anything")).toBeNull();
   });

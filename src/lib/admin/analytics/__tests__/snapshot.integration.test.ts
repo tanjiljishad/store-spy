@@ -10,7 +10,7 @@ const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "MetricSnapshot","AnonymousAnalysis","Subscription","Watchlist","AnalysisUsage","MarketingCollectionRun","Crawl","PromoRedemption","PromoCode","Session","Account","Store","User" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "MetricSnapshot","AnonymousAnalysis","Subscription","Watchlist","AnalysisUsage","MarketingCollectionRun","Crawl","PromoRedemption","PromoCode","Session","Account","Store" RESTART IDENTITY CASCADE`,
   );
   await resetControlPlane(prisma);
 });
@@ -20,7 +20,7 @@ const NOW = new Date("2026-08-21T14:37:00Z");
 describe("computeAndStoreSnapshots", () => {
   it("writes rows on a cold table (never computed before), and includes a real funnel metric for the 1d window", async () => {
     const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-    await prisma.user.update({ where: { id: user.id }, data: { createdAt: new Date("2026-08-21T10:00:00Z") } });
+    await prisma.cpUser.update({ where: { id: user.id }, data: { createdAt: new Date("2026-08-21T10:00:00Z") } });
 
     const result = await computeAndStoreSnapshots(prisma, NOW);
     expect(result.computed).toBe(true);
@@ -41,7 +41,7 @@ describe("computeAndStoreSnapshots", () => {
 
   it("a call after the minimum interval recomputes and overwrites the same row in place (upsert, not a new one)", async () => {
     const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-    await prisma.user.update({ where: { id: user.id }, data: { createdAt: new Date("2026-08-21T10:00:00Z") } });
+    await prisma.cpUser.update({ where: { id: user.id }, data: { createdAt: new Date("2026-08-21T10:00:00Z") } });
 
     await computeAndStoreSnapshots(prisma, NOW);
     const rowCountAfterFirst = await prisma.metricSnapshot.count({ where: { metricKey: "funnel.signups:1d" } });
@@ -49,7 +49,7 @@ describe("computeAndStoreSnapshots", () => {
 
     // A second signup, then recompute a full hour later.
     const secondUser = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-    await prisma.user.update({ where: { id: secondUser.id }, data: { createdAt: new Date("2026-08-21T15:30:00Z") } });
+    await prisma.cpUser.update({ where: { id: secondUser.id }, data: { createdAt: new Date("2026-08-21T15:30:00Z") } });
     const later = new Date(NOW.getTime() + 60 * 60_000 + 1);
     const result = await computeAndStoreSnapshots(prisma, later);
     expect(result.computed).toBe(true);
@@ -71,7 +71,7 @@ describe("computeAndStoreSnapshots", () => {
 
   it("writes retention rows keyed by cohort month", async () => {
     const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-    await prisma.user.update({ where: { id: user.id }, data: { createdAt: new Date("2026-07-15T00:00:00Z") } });
+    await prisma.cpUser.update({ where: { id: user.id }, data: { createdAt: new Date("2026-07-15T00:00:00Z") } });
 
     await computeAndStoreSnapshots(prisma, NOW);
     const cohort = await prisma.metricSnapshot.findFirst({

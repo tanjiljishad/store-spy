@@ -44,7 +44,7 @@ const prisma = new PrismaClient();
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AdminAuditLog","AnalysisUsage","Watchlist","Session","Account","User","Store" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AdminAuditLog","AnalysisUsage","Watchlist","Session","Account","Store" RESTART IDENTITY CASCADE`,
   );
   _resetRateLimitState();
   await resetControlPlane(prisma);
@@ -59,7 +59,7 @@ async function makeUser(role: "USER" | "SUPPORT_ADMIN" | "BILLING_ADMIN" | "SUPE
 }
 
 function signInAs(user: { id: string; email: string; role: string }) {
-  vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: user.role as never });
+  vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: user.role as never });
 }
 
 function req(url2: string, init: { method?: string; body?: string } = {}): NextRequest {
@@ -148,8 +148,8 @@ describe("PATCH /api/admin/users/[id]/plan", () => {
     const res = await patchPlan(req("/x", { method: "PATCH", body: JSON.stringify({ plan: "BASIC" }) }), ctx(target.id));
     expect(res.status).toBe(200);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: target.id } });
-    expect(updated.plan).toBe("BASIC");
+    const sub = await prisma.cpSubscription.findFirstOrThrow({ where: { accountId: `acct_${target.id}`, status: "ACTIVE" }, select: { planSlug: true } });
+    expect(sub.planSlug).toBe("BASIC");
     const auditRows = await prisma.adminAuditLog.count({ where: { targetId: target.id, action: "user.plan.update" } });
     expect(auditRows).toBe(1);
   });
@@ -173,7 +173,7 @@ describe("POST /api/admin/users/[id]/revoke-sessions", () => {
     const res = await revokeSessions(req("/x", { method: "POST" }), ctx(target.id));
     expect(res.status).toBe(200);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: target.id } });
+    const updated = await prisma.cpUser.findUniqueOrThrow({ where: { id: target.id } });
     expect(updated.sessionsValidAfter).not.toBeNull();
     const auditRows = await prisma.adminAuditLog.count({ where: { targetId: target.id, action: "user.sessions.revoke" } });
     expect(auditRows).toBe(1);

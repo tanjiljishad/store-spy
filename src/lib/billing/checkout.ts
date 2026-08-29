@@ -64,7 +64,7 @@ export async function processCheckout(prisma: PrismaClient, req: CheckoutRequest
   if (finalCents === 0) {
     const plan = req.plan;
     await prisma.$transaction(async (tx) => {
-      const user = await tx.user.findUniqueOrThrow({ where: { id: req.userId }, select: { email: true } });
+      const user = await tx.cpUser.findUniqueOrThrow({ where: { id: req.userId }, select: { email: true } });
 
       const checkout = await tx.checkout.create({
         data: {
@@ -89,13 +89,10 @@ export async function processCheckout(prisma: PrismaClient, req: CheckoutRequest
         });
       }
 
-      // TRANSITIONAL (B2 step 2·B): the User.plan write. B2 step 2·A keeps it
-      // alongside the control-plane write below (syncControlPlanePlan); 2·B
-      // drops this line and lets the control plane be the sole source of plan.
-      await tx.user.update({ where: { id: req.userId }, data: { plan } });
       // Milestone 12 §1.4: lifts any FREE-trial expiry ceiling from the
       // user's existing watches now that they've actually paid (or redeemed
-      // a 100%-off promo) for a plan that carries none.
+      // a 100%-off promo) for a plan that carries none. The plan itself is
+      // written to the control plane only (syncControlPlanePlan, below).
       await clearTrialCeiling(tx, req.userId);
 
       // The Subscription's expiry follows the redeemed promo's own
@@ -110,9 +107,9 @@ export async function processCheckout(prisma: PrismaClient, req: CheckoutRequest
         data: { userId: req.userId, plan, source: "PROMO", status: "ACTIVE", expiresAt },
       });
 
-      // B2 step 2·A dual-write: mirror the plan into the control plane. Same
-      // expiry the store_spy.Subscription just got. `verify:b2-step1` is the
-      // gate that this stays in sync — see docs/store-spy-control-plane-b2.md.
+      // The plan lives only in the control plane — rebuild this account's
+      // store-spy subscriptions + entitlements to match, with the same expiry
+      // the store_spy.Subscription just got.
       await syncControlPlanePlan(tx, { userId: req.userId, plan, trialEndsAt: null, paidPeriodEnd: expiresAt });
 
       await recordAdminAction(tx, {

@@ -9,7 +9,6 @@ if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "User" RESTART IDENTITY CASCADE`);
   await resetControlPlane(prisma);
 });
 
@@ -22,17 +21,17 @@ describe("grantMarketingConsent / revokeMarketingConsent", () => {
 
     await grantMarketingConsent(prisma, user.id, SIGNUP_FORM_CONSENT_SOURCE, now);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updated.marketingConsent).toBe(true);
-    expect(updated.marketingConsentAt).toEqual(now);
-    expect(updated.marketingConsentSource).toBe("signup_form");
+    const updated = await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(updated.consent).toBe(true);
+    expect(updated.consentAt).toEqual(now);
+    expect(updated.consentSource).toBe("signup_form");
   });
 
   it("records the OAuth-interstitial source distinctly from the signup-form source", async () => {
     const user = await makeUser();
     await grantMarketingConsent(prisma, user.id, OAUTH_WELCOME_CONSENT_SOURCE);
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updated.marketingConsentSource).toBe("oauth_welcome_interstitial");
+    const updated = await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(updated.consentSource).toBe("oauth_welcome_interstitial");
   });
 
   it("revoke flips consent to false but preserves the original marketingConsentAt/Source as history", async () => {
@@ -42,17 +41,17 @@ describe("grantMarketingConsent / revokeMarketingConsent", () => {
 
     await revokeMarketingConsent(prisma, user.id);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updated.marketingConsent).toBe(false);
-    expect(updated.marketingConsentAt).toEqual(grantedAt); // NOT cleared — the historical grant record survives
-    expect(updated.marketingConsentSource).toBe("signup_form");
+    const updated = await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(updated.consent).toBe(false);
+    expect(updated.consentAt).toEqual(grantedAt); // NOT cleared — the historical grant record survives
+    expect(updated.consentSource).toBe("signup_form");
   });
 
   it("revoke is idempotent — revoking a user who never consented is a harmless no-op", async () => {
     const user = await makeUser();
     await revokeMarketingConsent(prisma, user.id);
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updated.marketingConsent).toBe(false);
-    expect(updated.marketingConsentAt).toBeNull();
+    const updated = await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(updated.consent).toBe(false);
+    expect(updated.consentAt).toBeNull();
   });
 });

@@ -53,7 +53,7 @@ export async function grantPermission(
     return await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('permission-grant:' || ${targetUserId} || ':' || ${permission})::bigint)`;
 
-      const target = await tx.user.findUnique({ where: { id: targetUserId }, select: { id: true } });
+      const target = await tx.cpUser.findUnique({ where: { id: targetUserId }, select: { id: true } });
       if (!target) return { outcome: "user_not_found" as const };
 
       const now = new Date();
@@ -135,8 +135,12 @@ export interface EffectivePermissionsResult {
 
 /** GET /api/admin/users/[id]/permissions — role-derived vs granted, and their union, exactly as the doc's route bullet describes. */
 export async function getEffectivePermissionsForUser(prisma: PrismaClient, userId: string): Promise<EffectivePermissionsResult | null> {
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
-  if (!user) return null;
+  // B2 2·B commit 3a: existence from control_plane.users; role from
+  // store_spy.UserAdminRole (absence = USER).
+  const cpUser = await prisma.cpUser.findUnique({ where: { id: userId }, select: { id: true } });
+  if (!cpUser) return null;
+  const adminRole = await prisma.userAdminRole.findUnique({ where: { userId }, select: { role: true } });
+  const role: Role = adminRole?.role ?? "USER";
 
   const now = new Date();
   const activeGrants = await prisma.adminPermissionGrant.findMany({
@@ -145,11 +149,11 @@ export async function getEffectivePermissionsForUser(prisma: PrismaClient, userI
   });
 
   const grantedPermissions = activeGrants.map((g) => g.permission as Permission);
-  const effective = effectivePermissions(user.role, grantedPermissions);
+  const effective = effectivePermissions(role, grantedPermissions);
 
   return {
-    role: user.role,
-    roleDerived: permissionsFor(user.role).slice(),
+    role,
+    roleDerived: permissionsFor(role).slice(),
     granted: activeGrants.map((g) => ({
       permission: g.permission as Permission,
       grantedAt: g.grantedAt.toISOString(),

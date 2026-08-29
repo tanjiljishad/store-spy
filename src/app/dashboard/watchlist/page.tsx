@@ -4,6 +4,7 @@ import { requireUser, UnauthorizedError } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { maxActiveMonitoredStores } from "@/lib/entitlements/entitlement-service";
+import { getPurchasedPlanSlug } from "@/lib/control-plane/entitlements";
 import { formatLimit } from "@/lib/format-limit";
 
 export const metadata = { title: "Store Spy — Watchlist" };
@@ -24,13 +25,16 @@ export default async function WatchlistPage() {
   });
   const active = watches.filter((watch) => watch.monitoringStatus === "ACTIVE");
   const past = watches.filter((watch) => watch.monitoringStatus !== "ACTIVE");
-  const limit = maxActiveMonitoredStores(user.plan);
+  // Display copy only — the real slot ceiling is enforced by startMonitoring()
+  // against the control plane. getPurchasedPlanSlug is the coarse label.
+  const plan = await getPurchasedPlanSlug(prisma, user.id);
+  const limit = maxActiveMonitoredStores(plan);
 
   return (
     <div>
       <h1 className="mb-1.5 font-display text-3xl font-bold tracking-tight">Watchlist</h1>
       <p className="mb-8 font-mono text-[13px] text-muted">
-        {user.plan === "FREE" ? "Free plan: monitor 1 store at a time." : `Paid plan: monitor up to ${formatLimit(limit)} stores at a time.`} Historical data is never deleted when monitoring stops.
+        {plan === "FREE" ? "Free plan: monitor 1 store at a time." : `Paid plan: monitor up to ${formatLimit(limit)} stores at a time.`} Historical data is never deleted when monitoring stops.
       </p>
 
       <div className="mb-4 font-mono text-[11px] uppercase tracking-[0.16em] text-muted-dim">

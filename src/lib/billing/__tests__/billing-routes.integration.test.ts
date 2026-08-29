@@ -44,7 +44,7 @@ const prisma = new PrismaClient();
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AdminAuditLog","PromoRedemption","PromoCode","Checkout","Subscription","User" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AdminAuditLog","PromoRedemption","PromoCode","Checkout","Subscription" RESTART IDENTITY CASCADE`,
   );
   _resetRateLimitState();
   await resetControlPlane(prisma);
@@ -57,8 +57,17 @@ afterEach(() => {
 async function makeUser(role: "USER" | "SUPER_ADMIN" | "BILLING_ADMIN" = "USER") {
   return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role });
 }
+/** The account's current tier, from the control-plane subscription (B2 2·B). */
+async function currentPlan(userId: string): Promise<string> {
+  const sub = await prisma.cpSubscription.findFirstOrThrow({
+    where: { accountId: `acct_${userId}`, status: { in: ["ACTIVE", "TRIALING"] } },
+    orderBy: { createdAt: "desc" },
+    select: { planSlug: true },
+  });
+  return sub.planSlug!;
+}
 function signInAs(user: { id: string; email: string; role: string }) {
-  vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: user.role as never });
+  vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: user.role as never });
 }
 function req(url2: string, body?: unknown) {
   return new NextRequest(`http://localhost${url2}`, {
@@ -139,8 +148,7 @@ describe("POST /api/billing/checkout", () => {
     const body = await res.json();
     expect(body).toEqual({ status: "completed", plan: "BASIC" });
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updated.plan).toBe("BASIC");
+    expect(await currentPlan(user.id)).toBe("BASIC");
   });
 
   it("rejects a client-supplied price — the body has no price field the server ever reads", async () => {

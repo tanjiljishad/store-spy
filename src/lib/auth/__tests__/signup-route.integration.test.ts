@@ -23,7 +23,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "MarketingConversionEvent","Session","Account","User" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "MarketingConversionEvent","Session","Account" RESTART IDENTITY CASCADE`);
   await resetControlPlane(prisma);
   _resetRateLimitState();
 });
@@ -46,10 +46,11 @@ describe("POST /api/auth/signup", () => {
     const res = await signup(req({ email: "new-user@example.com", password: "correct-password" }));
     expect(res.status).toBe(201);
 
-    const user = await prisma.user.findUniqueOrThrow({ where: { email: "new-user@example.com" } });
+    const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "new-user@example.com" } });
     expect(user.passwordHash).not.toBe("correct-password");
     expect(await verifyPassword("correct-password", user.passwordHash!)).toBe(true);
-    expect(user.plan).toBe("FREE");
+    const sub = await prisma.cpSubscription.findFirst({ where: { accountId: `acct_${user.id}` }, select: { planSlug: true } });
+    expect(sub?.planSlug).toBe("FREE");
   });
 
   // A Credentials account starts unverified — GET /verify-email (the mailed
@@ -60,8 +61,8 @@ describe("POST /api/auth/signup", () => {
   it("creates the account unverified — emailVerified is null right after credentials signup", async () => {
     const res = await signup(req({ email: "unverified@example.com", password: "correct-password" }));
     expect(res.status).toBe(201);
-    const user = await prisma.user.findUniqueOrThrow({ where: { email: "unverified@example.com" } });
-    expect(user.emailVerified).toBeNull();
+    const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "unverified@example.com" } });
+    expect(user.emailVerifiedAt).toBeNull();
   });
 
   // Milestone 11, Phase 2, invariant 5: signup must never accept a `role`
@@ -71,13 +72,14 @@ describe("POST /api/auth/signup", () => {
   it("ignores a client-supplied role field — new accounts are always USER", async () => {
     const res = await signup(req({ email: "role-spoof@example.com", password: "correct-password", role: "SUPER_ADMIN" }));
     expect(res.status).toBe(201);
-    const user = await prisma.user.findUniqueOrThrow({ where: { email: "role-spoof@example.com" } });
-    expect(user.role).toBe("USER");
+    const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "role-spoof@example.com" } });
+    // "USER" == no store_spy.UserAdminRole row.
+    expect(await prisma.userAdminRole.findUnique({ where: { userId: user.id } })).toBeNull();
   });
 
   it("normalizes email on the way in", async () => {
     await signup(req({ email: "  Mixed.Case@Example.COM  ", password: "correct-password" }));
-    const user = await prisma.user.findUnique({ where: { email: "mixed.case@example.com" } });
+    const user = await prisma.cpUser.findUnique({ where: { email: "mixed.case@example.com" } });
     expect(user).not.toBeNull();
   });
 
@@ -93,20 +95,20 @@ describe("POST /api/auth/signup", () => {
   it("rejects a too-short password", async () => {
     const res = await signup(req({ email: "short-pw@example.com", password: "short" }));
     expect(res.status).toBe(400);
-    const users = await prisma.user.count({ where: { email: "short-pw@example.com" } });
+    const users = await prisma.cpUser.count({ where: { email: "short-pw@example.com" } });
     expect(users).toBe(0);
   });
 
   it("rejects a common password even at 10+ characters", async () => {
     const res = await signup(req({ email: "weak-pw@example.com", password: "qwertyuiop" }));
     expect(res.status).toBe(400);
-    expect(await prisma.user.count({ where: { email: "weak-pw@example.com" } })).toBe(0);
+    expect(await prisma.cpUser.count({ where: { email: "weak-pw@example.com" } })).toBe(0);
   });
 
   it("rejects a password containing the account's own email local-part", async () => {
     const res = await signup(req({ email: "distinctivename@example.com", password: "distinctivename99" }));
     expect(res.status).toBe(400);
-    expect(await prisma.user.count({ where: { email: "distinctivename@example.com" } })).toBe(0);
+    expect(await prisma.cpUser.count({ where: { email: "distinctivename@example.com" } })).toBe(0);
   });
 
   it("pads both the 201 and 409 responses to the same minimum floor, closing the timing side of enumeration", async () => {
@@ -148,13 +150,13 @@ describe("POST /api/auth/signup", () => {
         }),
       );
       expect(res.status).toBe(400);
-      expect(await prisma.user.count({ where: { email: "no-tos@example.com" } })).toBe(0);
+      expect(await prisma.cpUser.count({ where: { email: "no-tos@example.com" } })).toBe(0);
     });
 
     it("rejects signup with tosAccepted: false explicitly", async () => {
       const res = await signup(req({ email: "tos-false@example.com", password: "correct-password", tosAccepted: false }));
       expect(res.status).toBe(400);
-      expect(await prisma.user.count({ where: { email: "tos-false@example.com" } })).toBe(0);
+      expect(await prisma.cpUser.count({ where: { email: "tos-false@example.com" } })).toBe(0);
     });
 
     it("accepts signup with tosAccepted: true", async () => {
@@ -171,7 +173,7 @@ describe("POST /api/auth/signup", () => {
       await signup(req({ email: "tos-timestamp@example.com", password: "correct-password" }));
       const after = new Date();
 
-      const user = await prisma.user.findUniqueOrThrow({ where: { email: "tos-timestamp@example.com" } });
+      const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "tos-timestamp@example.com" } });
       expect(user.tosAcceptedAt).not.toBeNull();
       expect(user.tosAcceptedAt!.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
       expect(user.tosAcceptedAt!.getTime()).toBeLessThanOrEqual(after.getTime() + 1000);
@@ -183,16 +185,17 @@ describe("POST /api/auth/signup", () => {
   describe("marketing consent", () => {
     it("defaults to false — marketingConsentAt/Source stay null — when the field is omitted (unticked)", async () => {
       await signup(req({ email: "no-marketing@example.com", password: "correct-password" }));
-      const user = await prisma.user.findUniqueOrThrow({ where: { email: "no-marketing@example.com" } });
-      expect(user.marketingConsent).toBe(false);
-      expect(user.marketingConsentAt).toBeNull();
-      expect(user.marketingConsentSource).toBeNull();
+      const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "no-marketing@example.com" } });
+      const mc = await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } });
+      expect(mc.consent).toBe(false);
+      expect(mc.consentAt).toBeNull();
+      expect(mc.consentSource).toBeNull();
     });
 
     it("stays false even when tosAccepted is true and marketingConsent is absent — the two are genuinely independent, not linked", async () => {
       await signup(req({ email: "tos-only@example.com", password: "correct-password", tosAccepted: true }));
-      const user = await prisma.user.findUniqueOrThrow({ where: { email: "tos-only@example.com" } });
-      expect(user.marketingConsent).toBe(false);
+      const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "tos-only@example.com" } });
+      expect((await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } })).consent).toBe(false);
     });
 
     it("records true, with a real timestamp and source, when marketingConsent: true is sent", async () => {
@@ -200,18 +203,19 @@ describe("POST /api/auth/signup", () => {
       await signup(req({ email: "wants-marketing@example.com", password: "correct-password", marketingConsent: true }));
       const after = new Date();
 
-      const user = await prisma.user.findUniqueOrThrow({ where: { email: "wants-marketing@example.com" } });
-      expect(user.marketingConsent).toBe(true);
-      expect(user.marketingConsentSource).toBe("signup_form");
-      expect(user.marketingConsentAt).not.toBeNull();
-      expect(user.marketingConsentAt!.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
-      expect(user.marketingConsentAt!.getTime()).toBeLessThanOrEqual(after.getTime() + 1000);
+      const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "wants-marketing@example.com" } });
+      const mc = await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } });
+      expect(mc.consent).toBe(true);
+      expect(mc.consentSource).toBe("signup_form");
+      expect(mc.consentAt).not.toBeNull();
+      expect(mc.consentAt!.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
+      expect(mc.consentAt!.getTime()).toBeLessThanOrEqual(after.getTime() + 1000);
     });
 
     it("a truthy but non-boolean marketingConsent value is NOT treated as consent — only a literal true counts", async () => {
       await signup(req({ email: "truthy-not-true@example.com", password: "correct-password", marketingConsent: "yes" }));
-      const user = await prisma.user.findUniqueOrThrow({ where: { email: "truthy-not-true@example.com" } });
-      expect(user.marketingConsent).toBe(false);
+      const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "truthy-not-true@example.com" } });
+      expect((await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } })).consent).toBe(false);
     });
   });
 
@@ -225,7 +229,7 @@ describe("POST /api/auth/signup", () => {
       const res = await signup(req({ email: "cookie-granted@example.com", password: "correct-password" }, "203.0.113.50", "store-spy-cookie-consent=granted"));
       expect(res.status).toBe(201);
 
-      const user = await prisma.user.findUniqueOrThrow({ where: { email: "cookie-granted@example.com" } });
+      const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "cookie-granted@example.com" } });
       const events = await prisma.marketingConversionEvent.findMany({ where: { userId: user.id } });
       expect(events).toHaveLength(5);
       for (const event of events) {
@@ -236,13 +240,13 @@ describe("POST /api/auth/signup", () => {
 
     it("records nothing when the cookie is denied", async () => {
       await signup(req({ email: "cookie-denied@example.com", password: "correct-password" }, "203.0.113.51", "store-spy-cookie-consent=denied"));
-      const user = await prisma.user.findUniqueOrThrow({ where: { email: "cookie-denied@example.com" } });
+      const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "cookie-denied@example.com" } });
       expect(await prisma.marketingConversionEvent.count({ where: { userId: user.id } })).toBe(0);
     });
 
     it("records nothing when no consent cookie was ever sent (a visitor who never interacted with the banner)", async () => {
       await signup(req({ email: "cookie-unset@example.com", password: "correct-password" }, "203.0.113.52"));
-      const user = await prisma.user.findUniqueOrThrow({ where: { email: "cookie-unset@example.com" } });
+      const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "cookie-unset@example.com" } });
       expect(await prisma.marketingConversionEvent.count({ where: { userId: user.id } })).toBe(0);
     });
 
@@ -250,8 +254,8 @@ describe("POST /api/auth/signup", () => {
       await signup(
         req({ email: "cookie-yes-email-no@example.com", password: "correct-password", marketingConsent: false }, "203.0.113.53", "store-spy-cookie-consent=granted"),
       );
-      const user = await prisma.user.findUniqueOrThrow({ where: { email: "cookie-yes-email-no@example.com" } });
-      expect(user.marketingConsent).toBe(false);
+      const user = await prisma.cpUser.findUniqueOrThrow({ where: { email: "cookie-yes-email-no@example.com" } });
+      expect((await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } })).consent).toBe(false);
       expect(await prisma.marketingConversionEvent.count({ where: { userId: user.id } })).toBe(5);
     });
   });

@@ -3,14 +3,14 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { expireDueWatches, startMonitoring, stopMonitoring } from "../watch";
 import { clearTrialCeiling } from "../../billing/subscription-sweep";
-import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
+import { setTrialWindow, makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","User","Store" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","Store" RESTART IDENTITY CASCADE`);
   await resetControlPlane(prisma);
 });
 async function user(plan: "FREE" | "BASIC" | "BUSINESS" = "FREE") { return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan }); }
@@ -25,12 +25,11 @@ describe("monitoring entitlements", () => {
 
     const watch = await prisma.watchlist.findUniqueOrThrow({ where: { userId_storeId: { userId: account.id, storeId: a.id } } });
     // Milestone 12 §1.4: unlike pre-M12 (no expiry at all), a FREE watch now
-    // carries the account's trial ceiling — never null, and equal to
-    // freeTrialEndsAt since monitoringDurationDays(FREE) is itself null
-    // (min(freeTrialEndsAt, null) == freeTrialEndsAt).
-    const freshUser = await prisma.user.findUniqueOrThrow({ where: { id: account.id } });
+    // carries the account's trial ceiling — never null, and equal to the
+    // subt_ subscription's period_end (makeStoreSpyUser's echo) since
+    // monitoringDurationDays(FREE) is itself null (min(trialEnd, null) == trialEnd).
     expect(watch.monitoringExpiresAt).not.toBeNull();
-    expect(watch.monitoringExpiresAt!.getTime()).toBe(freshUser.freeTrialEndsAt!.getTime());
+    expect(watch.monitoringExpiresAt!.getTime()).toBe(account.freeTrialEndsAt.getTime());
   });
 
   // Milestone 12 §1.4 acceptance criterion: "A FREE user's watch expires
@@ -39,7 +38,7 @@ describe("monitoring entitlements", () => {
   // premise no longer holds now that FREE carries a real trial ceiling.
   it("a FREE user's watch expires once freeTrialEndsAt passes, and the store's tier recomputes", async () => {
     const account = await user();
-    await prisma.user.update({ where: { id: account.id }, data: { freeTrialEndsAt: new Date(NOW.getTime() + 30 * 24 * 60 * 60_000) } });
+    await setTrialWindow(prisma, account.id, new Date(NOW.getTime() + 30 * 24 * 60 * 60_000));
     const watched = await store();
 
     await startMonitoring(prisma, account.id, watched.id, "FREE", NOW);
@@ -62,7 +61,7 @@ describe("monitoring entitlements", () => {
   it("a FREE user whose trial already ended cannot start a NEW watch — rejected with trial_expired, not silently created-then-expired", async () => {
     const account = await user();
     const pastTrialEnd = new Date(NOW.getTime() - 24 * 60 * 60_000); // ended yesterday
-    await prisma.user.update({ where: { id: account.id }, data: { freeTrialEndsAt: pastTrialEnd } });
+    await setTrialWindow(prisma, account.id, pastTrialEnd);
     const watched = await store();
 
     const result = await startMonitoring(prisma, account.id, watched.id, "FREE", NOW);
@@ -74,14 +73,15 @@ describe("monitoring entitlements", () => {
   // the trial ceiling on the existing watch."
   it("upgrading from FREE to a paid plan lifts the trial ceiling on an existing watch (clearTrialCeiling)", async () => {
     const account = await user();
-    await prisma.user.update({ where: { id: account.id }, data: { freeTrialEndsAt: new Date(NOW.getTime() + 30 * 24 * 60 * 60_000) } });
+    await setTrialWindow(prisma, account.id, new Date(NOW.getTime() + 30 * 24 * 60 * 60_000));
     const watched = await store();
     await startMonitoring(prisma, account.id, watched.id, "FREE", NOW);
 
     const beforeUpgrade = await prisma.watchlist.findUniqueOrThrow({ where: { userId_storeId: { userId: account.id, storeId: watched.id } } });
     expect(beforeUpgrade.monitoringExpiresAt).not.toBeNull();
 
-    await prisma.user.update({ where: { id: account.id }, data: { plan: "BASIC" } });
+    // The upgrade itself is exercised elsewhere; this test is only about
+    // clearTrialCeiling lifting the ceiling off existing watches.
     await clearTrialCeiling(prisma, account.id);
 
     const afterUpgrade = await prisma.watchlist.findUniqueOrThrow({ where: { userId_storeId: { userId: account.id, storeId: watched.id } } });

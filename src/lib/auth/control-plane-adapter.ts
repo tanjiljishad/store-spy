@@ -5,25 +5,28 @@ import { randomUUID } from "node:crypto";
 import { provisionStoreSpyAccount, trialEndsFromNow } from "../control-plane/provision";
 
 /**
- * B2 step 2·A adapter. Wraps the stock `@auth/prisma-adapter` (which still
- * reads/writes `store_spy.User`) and overrides ONLY the two methods that
- * create or mutate a user, so that OAuth first sign-in also provisions the
- * control-plane account (`control_plane.{accounts,users,subscriptions,
- * entitlements}`).
- *
- * TRANSITIONAL: every override here ALSO writes a shadow `store_spy.User`
- * row (same id) — the `*_userId_fkey` constraints still point at
- * `store_spy.User` until migration `20260828180000` (B2 step 2), and gates +
- * billing still read `User.plan` until B2 step 2·B. **B2 step 2·B replaces
- * this whole file with a control-plane-native adapter and removes the shadow
- * writes.** If that step slips, this scaffolding is what silently keeps the
- * old FK satisfiable — grep for "TRANSITIONAL (B2 step 2·B)".
+ * The Auth.js adapter. Wraps `@auth/prisma-adapter` for the `Account` /
+ * `Session` / `VerificationToken` plumbing (still `store_spy` tables) but
+ * routes every USER read and write to `control_plane.users` — that is the
+ * account of record (B2 2·B). As of commit 3b it no longer writes a shadow
+ * `store_spy.User` row; createUser still seeds the per-product
+ * `store_spy.MarketingConsent` row.
  */
 export function controlPlaneAdapter(prisma: PrismaClient): Adapter {
   const base = PrismaAdapter(prisma);
 
   return {
     ...base,
+
+    getUser: (id) => cpUserToAdapter(prisma, { id }),
+    getUserByEmail: (email) => cpUserToAdapter(prisma, { email }),
+    async getUserByAccount({ provider, providerAccountId }) {
+      const account = await prisma.account.findUnique({
+        where: { provider_providerAccountId: { provider, providerAccountId } },
+        select: { userId: true },
+      });
+      return account ? cpUserToAdapter(prisma, { id: account.userId }) : null;
+    },
 
     async createUser(user) {
       const id = randomUUID();
@@ -32,53 +35,37 @@ export function controlPlaneAdapter(prisma: PrismaClient): Adapter {
       const image = user.image ?? null;
       const emailVerifiedAt = user.emailVerified ?? null;
 
-      const created = await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx) => {
         await provisionStoreSpyAccount(tx, {
           userId: id,
           email,
           passwordHash: null, // OAuth-only user
           name,
+          image,
           emailVerifiedAt,
           tosAcceptedAt: null, // set later by the /welcome interstitial
           trialEndsAt: trialEndsFromNow(),
         });
-        // TRANSITIONAL (B2 step 2·B): shadow store_spy.User row + its consent
-        // row. OAuth users start with consent=false; the /welcome interstitial
-        // may flip it via grantMarketingConsent().
-        const shadow = await tx.user.create({
-          data: { id, email, name, image, emailVerified: emailVerifiedAt, plan: "FREE", role: "USER", freeTrialEndsAt: trialEndsFromNow() },
-        });
+        // OAuth users start with consent=false; the /welcome interstitial may
+        // flip it via grantMarketingConsent().
         await tx.marketingConsent.create({ data: { userId: id, consent: false } });
-        return shadow;
       });
 
-      return toAdapterUser(created);
+      return { id, email, name, image, emailVerified: emailVerifiedAt };
     },
 
     async updateUser({ id, ...data }) {
       const cpData: Record<string, unknown> = {};
-      const ssData: Record<string, unknown> = {};
-      if (data.email !== undefined) {
-        cpData.email = data.email;
-        ssData.email = data.email;
-      }
-      if (data.name !== undefined) {
-        cpData.name = data.name;
-        ssData.name = data.name;
-      }
-      if (data.image !== undefined) ssData.image = data.image; // control_plane.users has no image column reader; keep it on the shadow row
-      if (data.emailVerified !== undefined) {
-        cpData.emailVerifiedAt = data.emailVerified;
-        ssData.emailVerified = data.emailVerified;
-      }
+      if (data.email !== undefined) cpData.email = data.email;
+      if (data.name !== undefined) cpData.name = data.name;
+      if (data.image !== undefined) cpData.image = data.image;
+      if (data.emailVerified !== undefined) cpData.emailVerifiedAt = data.emailVerified;
 
-      const updated = await prisma.$transaction(async (tx) => {
-        if (Object.keys(cpData).length > 0) await tx.cpUser.updateMany({ where: { id }, data: cpData });
-        // TRANSITIONAL (B2 step 2·B): keep the shadow store_spy.User row in step.
-        return tx.user.update({ where: { id }, data: ssData });
-      });
+      if (Object.keys(cpData).length > 0) await prisma.cpUser.updateMany({ where: { id }, data: cpData });
 
-      return toAdapterUser(updated);
+      const fresh = await cpUserToAdapter(prisma, { id });
+      if (!fresh) throw new Error(`updateUser: no control_plane.users row for ${id}`);
+      return fresh;
     },
   };
 }
@@ -91,4 +78,15 @@ function toAdapterUser(row: {
   emailVerified: Date | null;
 }): AdapterUser {
   return { id: row.id, email: row.email, name: row.name, image: row.image, emailVerified: row.emailVerified };
+}
+
+async function cpUserToAdapter(
+  prisma: PrismaClient,
+  where: { id: string } | { email: string },
+): Promise<AdapterUser | null> {
+  const u = await prisma.cpUser.findUnique({
+    where,
+    select: { id: true, email: true, name: true, image: true, emailVerifiedAt: true },
+  });
+  return u ? toAdapterUser({ ...u, emailVerified: u.emailVerifiedAt }) : null;
 }

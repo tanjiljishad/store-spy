@@ -13,14 +13,17 @@ export interface VerifiedIdentity {
  * The actual email/password check, factored out of the Credentials
  * provider's authorize() callback so it's directly unit/integration
  * testable without going through NextAuth's request pipeline.
+ *
+ * B2 2·B: reads `control_plane.users` — the account of record — instead of
+ * `store_spy.User`.
  */
 export async function verifyCredentials(
-  prisma: PrismaClient,
+  prisma: Pick<PrismaClient, "cpUser">,
   emailInput: string,
   password: string,
 ): Promise<VerifiedIdentity | null> {
   const email = normalizeEmail(emailInput);
-  const user = await prisma.user.findUnique({ where: { email } });
+  const user = await prisma.cpUser.findUnique({ where: { email } });
   if (!user || !user.passwordHash) return null; // OAuth-only user has no password to check
 
   const ok = await verifyPassword(password, user.passwordHash);

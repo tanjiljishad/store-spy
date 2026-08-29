@@ -9,7 +9,6 @@ if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "User" RESTART IDENTITY CASCADE`);
   await resetControlPlane(prisma);
 });
 
@@ -41,11 +40,11 @@ describe("recordOAuthWelcomeConsent", () => {
 
     await recordOAuthWelcomeConsent(prisma, user.id, { marketingConsent: false }, now);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updated.tosAcceptedAt).toEqual(now);
-    expect(updated.marketingConsent).toBe(false);
-    expect(updated.marketingConsentAt).toBeNull();
-    expect(updated.marketingConsentSource).toBeNull();
+    expect((await prisma.cpUser.findUniqueOrThrow({ where: { id: user.id } })).tosAcceptedAt).toEqual(now);
+    const mc = await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(mc.consent).toBe(false);
+    expect(mc.consentAt).toBeNull();
+    expect(mc.consentSource).toBeNull();
   });
 
   it("sets tosAcceptedAt AND grants marketing consent, with the oauth_welcome_interstitial source, when marketingConsent is true", async () => {
@@ -54,11 +53,11 @@ describe("recordOAuthWelcomeConsent", () => {
 
     await recordOAuthWelcomeConsent(prisma, user.id, { marketingConsent: true }, now);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updated.tosAcceptedAt).toEqual(now);
-    expect(updated.marketingConsent).toBe(true);
-    expect(updated.marketingConsentAt).toEqual(now);
-    expect(updated.marketingConsentSource).toBe("oauth_welcome_interstitial");
+    expect((await prisma.cpUser.findUniqueOrThrow({ where: { id: user.id } })).tosAcceptedAt).toEqual(now);
+    const mc = await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(mc.consent).toBe(true);
+    expect(mc.consentAt).toEqual(now);
+    expect(mc.consentSource).toBe("oauth_welcome_interstitial");
   });
 
   it("after recording, needsConsentInterstitial flips to false for the same user", async () => {

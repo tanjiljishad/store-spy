@@ -25,13 +25,22 @@ afterAll(async () => prisma.$disconnect());
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AdminAuditLog","Watchlist","Subscription","Store","User" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AdminAuditLog","Watchlist","Subscription","Store" RESTART IDENTITY CASCADE`,
   );
   await resetControlPlane(prisma);
 });
 
 async function makeUser(plan: "FREE" | "BASIC" = "BASIC") {
   return makeStoreSpyUser(prisma, { plan });
+}
+/** The account's current tier, from the control-plane subscription (B2 2·B). */
+async function currentPlan(userId: string): Promise<string> {
+  const sub = await prisma.cpSubscription.findFirstOrThrow({
+    where: { accountId: `acct_${userId}`, status: { in: ["ACTIVE", "TRIALING"] } },
+    orderBy: { createdAt: "desc" },
+    select: { planSlug: true },
+  });
+  return sub.planSlug!;
 }
 async function makeStore(tier: "HOT" | "COLD" = "HOT") {
   return prisma.store.create({ data: { domain: `${randomUUID().slice(0, 8)}.com`, platform: "SHOPIFY", tier } });
@@ -52,8 +61,7 @@ describe("expireDueSubscriptions — the amendment's four required tests", () =>
     const result = await expireDueSubscriptions(prisma);
     expect(result.expiredCount).toBe(1);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updated.plan).toBe("FREE");
+    expect(await currentPlan(user.id)).toBe("FREE");
 
     const sub = await prisma.subscription.findFirstOrThrow({ where: { userId: user.id } });
     expect(sub.status).toBe("EXPIRED");
@@ -129,8 +137,7 @@ describe("expireDueSubscriptions — the amendment's four required tests", () =>
     const stillSub = await prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
     expect(stillSub.status).toBe("ACTIVE");
 
-    const stillUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(stillUser.plan).toBe("BASIC"); // never downgraded
+    expect(await currentPlan(user.id)).toBe("BASIC"); // never downgraded
   });
 
   it("does not touch a subscription that is not yet due", async () => {
@@ -141,7 +148,7 @@ describe("expireDueSubscriptions — the amendment's four required tests", () =>
 
     const result = await expireDueSubscriptions(prisma);
     expect(result.expiredCount).toBe(0);
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).plan).toBe("BASIC");
+    expect(await currentPlan(user.id)).toBe("BASIC");
   });
 
   it("isolates a failure on one subscription from the rest of the sweep", async () => {
@@ -150,14 +157,15 @@ describe("expireDueSubscriptions — the amendment's four required tests", () =>
     await prisma.subscription.create({ data: { userId: userA.id, plan: "BASIC", source: "PROMO", status: "ACTIVE", expiresAt: new Date(Date.now() - 1000) } });
     await prisma.subscription.create({ data: { userId: userB.id, plan: "BASIC", source: "PROMO", status: "ACTIVE", expiresAt: new Date(Date.now() - 1000) } });
 
-    // Delete userA's User row out from under its own due Subscription to
-    // force expireOneSubscription's internal transaction to fail for that
-    // one row (a real, not simulated, failure mode) — userB must still process.
-    await prisma.user.delete({ where: { id: userA.id } });
+    // Delete userA's control-plane account out from under its own due
+    // Subscription so expireOneSubscription's internal transaction fails for
+    // that one row (resolveTrialEnd's cpUser lookup throws) — a real, not
+    // simulated, failure mode. userB must still process.
+    await prisma.cpAccount.delete({ where: { id: `acct_${userA.id}` } });
 
     const result = await expireDueSubscriptions(prisma);
     expect(result.expiredCount).toBe(1);
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: userB.id } })).plan).toBe("FREE");
+    expect(await currentPlan(userB.id)).toBe("FREE");
   });
 
   it("writes exactly one audit row per downgraded subscription, with actor system:expiry", async () => {

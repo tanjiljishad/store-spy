@@ -482,21 +482,9 @@ model Event {
 // fields, the adapter reads/writes them by exact name.
 // ---------------------------------------------------------------------------
 
-/// Source of truth for plan-gated behavior. Nothing outside
-/// src/lib/entitlements/ should ever compare this directly — go through
-/// EntitlementService.hasCapability() instead.
-enum PlanTier {
-  FREE
-  /// The paid tier introduced in Milestone 3 Sub-phase C: unlimited
-  /// analyses, up to 20 active monitors, continuous (non-expiring)
-  /// monitoring. Renamed from PRO (Sub-phase A never actually granted
-  /// PRO to any user — no billing exists yet — so this rename carries
-  /// no live data).
-  BASIC
-  BUSINESS
-
-  @@schema("store_spy")
-}
+// The plan tier is not a database enum. B2 2·B step 4 dropped `store_spy.PlanTier`;
+// the tier is `control_plane.subscriptions.plan_slug` (a plain string) and the
+// TS union `PlanTier` lives in src/lib/entitlements/plan-limits.ts.
 
 /// Coarse admin roles — fine-grained access is Permission (src/lib/admin/roles.ts),
 /// never a raw role-string comparison in route/service code. SUPER_ADMIN is
@@ -522,103 +510,11 @@ enum Role {
   @@schema("store_spy")
 }
 
-model User {
-  id                     String    @id @default(cuid())
-  email                  String    @unique
-  emailVerified          DateTime?
-  name                   String?
-  image                  String?
-  /// Null for OAuth-only users. Set only via the Credentials provider's
-  /// signup path, hashed with bcrypt — never stored or logged raw.
-  passwordHash           String?
-  plan                   PlanTier  @default(FREE)
-  role                   Role      @default(USER)
-  /// A JWT issued before this timestamp is rejected by the `jwt` callback
-  /// (see auth.ts) even if it hasn't expired — the real "sign out
-  /// everywhere" / compromised-account kill switch that JWT sessions
-  /// otherwise can't offer (session strategy is JWT, not database; see
-  /// auth.ts's own doc comment for why). Null means no floor: every
-  /// existing token is still valid. Set via POST
-  /// /api/admin/users/[id]/revoke-sessions in Phase 2.
-  sessionsValidAfter     DateTime?
-  /// Milestone 12 §1.4, per D1: anchored to account creation, never to first
-  /// watch or first analysis — set once at insert time via a DB-level
-  /// default (`now() + 30 days`) so every creation path (signup route,
-  /// OAuth first sign-in through the Auth.js Prisma adapter, the admin
-  /// bootstrap script) gets it uniformly with no risk of a missed call site.
-  /// Only ever read for a FREE-plan user (monitoring/watch.ts); ignored for
-  /// paid plans, so an upgrade never needs to null it back out.
-  ///
-  /// The `AT TIME ZONE 'UTC'` is not decorative — see AGENTS.md's Database
-  /// time rule. Unlike Prisma's own `@default(now())` fields (createdAt,
-  /// etc.), which Prisma's query engine populates client-side with an
-  /// explicit, already-UTC-safe parameter and never actually invokes this
-  /// column's SQL-level DEFAULT to do it, THIS default genuinely does fire
-  /// at insert time for every real caller (prisma.user.create() has no
-  /// client-side special-casing for a non-`now()` default expression).
-  /// Confirmed live: with a non-UTC session TimeZone (Asia/Dhaka, this
-  /// project's own dev Postgres — the exact scenario AGENTS.md documents),
-  /// `now() + interval '30 days'` cast bare into this timestamp(3) column
-  /// landed 6 hours off from `createdAt + 30 days`; wrapping the whole
-  /// expression in `AT TIME ZONE 'UTC'` fixed it, verified against the same
-  /// session.
-  freeTrialEndsAt        DateTime? @default(dbgenerated("((now() + interval '30 days') AT TIME ZONE 'UTC')"))
-  /// Milestone 12 §4.1: a SEPARATE, unticked-by-default opt-in — never
-  /// bundled into ToS acceptance (bundled consent is not valid consent
-  /// under GDPR/PECR). Defaults to `false` for every creation path,
-  /// including OAuth first sign-in through the Auth.js Prisma adapter,
-  /// which has no consent-checkbox moment at all: "no consent was ever
-  /// asked or given" and "explicitly declined" are indistinguishable here
-  /// by design, and both correctly mean "do not send marketing email."
-  /// `POST /api/admin/users/export`'s `purpose:"marketing"` branch
-  /// (analytics/user-export.ts) filters on this field — never on
-  /// `emailVerified` or any other proxy.
-  marketingConsent       Boolean   @default(false)
-  /// Set only when `marketingConsent` is actually granted (`true`) — there
-  /// is no "consent event" to timestamp when it's merely left at its
-  /// default `false`. Read by `GET /api/unsubscribe` alongside
-  /// `marketingConsentSource` as part of the record of what was granted,
-  /// when, and from where; NOT cleared on unsubscribe (unsubscribeMarketing()
-  /// only flips `marketingConsent` back to `false`) — the original grant
-  /// timestamp/source stays the historical record of record, the same
-  /// append-only-history spirit as `AdminAuditLog`.
-  marketingConsentAt     DateTime?
-  /// Free text, not an enum, matching `AdminAuditLog.action`'s own
-  /// convention — a new consent-capture surface (e.g. a future checkout
-  /// upsell) shouldn't require a migration. `"signup_form"` is the only
-  /// value this milestone's own code ever writes.
-  marketingConsentSource String?
-  /// Milestone 12 §4.1 addendum: set the moment ToS is accepted, on
-  /// EITHER signup path. Credentials signup sets it synchronously, in the
-  /// same `create()` call as the row itself (the route already validates
-  /// `tosAccepted === true` before allowing signup at all). OAuth first
-  /// sign-in has no such moment — the Auth.js Prisma adapter creates this
-  /// row directly with no consent step of its own — so it stays null
-  /// until the post-OAuth consent interstitial (`/welcome`,
-  /// `POST /api/account/consent`) sets it. Null is the ONE condition
-  /// `DashboardLayout` checks (a fresh read, not the JWT — see its own
-  /// comment for why) to gate access: no dashboard page renders for an
-  /// account that has never accepted, regardless of which path created it.
-  /// Never backdated for pre-existing accounts created before this field
-  /// existed — fabricating a consent timestamp that was never actually
-  /// given would defeat the entire point; those accounts see the
-  /// interstitial once, the same as any other un-consented account.
-  tosAcceptedAt          DateTime?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
-
-  accounts         Account[]
-  sessions         Session[]
-  watchlists       Watchlist[]
-  analysisUsage    AnalysisUsage[]
-  /// Grants held BY this user — see AdminPermissionGrant's own doc comment
-  /// for why grantedByUserId (the OTHER direction) is deliberately not a
-  /// second relation here.
-  permissionGrants AdminPermissionGrant[]
-
-  @@index([role])
-  @@schema("store_spy")
-}
+// `model User` (store_spy."User") was dropped in B2 2·B step 4 — the account of
+// record is `control_plane.users` (model CpUser). Its columns' new homes are in
+// docs/store-spy-control-plane-b2.md's discharge table. The store_spy child
+// models below relate directly to CpUser (the FKs were repointed there in
+// migration 20260828180000).
 
 /// Append-only, in the same transaction as the change it records (see
 /// recordAdminAction() in src/lib/admin/audit.ts) — if the audit write
@@ -704,7 +600,7 @@ model AdminAuditLog {
 model AdminPermissionGrant {
   id              String    @id @default(cuid())
   userId          String
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user            CpUser      @relation(fields: [userId], references: [id], onDelete: Cascade)
   permission      String
   grantedByUserId String
   grantedAt       DateTime  @default(now())
@@ -747,7 +643,7 @@ model LoginAttempt {
 model Account {
   id                String  @id @default(cuid())
   userId            String
-  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user              CpUser    @relation(fields: [userId], references: [id], onDelete: Cascade)
   type              String
   provider          String
   providerAccountId String
@@ -771,7 +667,7 @@ model Session {
   id           String   @id @default(cuid())
   sessionToken String   @unique
   userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         CpUser     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expires      DateTime
 
   @@schema("store_spy")
@@ -817,7 +713,7 @@ enum WatchStatus {
 model Watchlist {
   id      String @id @default(cuid())
   userId  String
-  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user    CpUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
   storeId String
   store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
 
@@ -858,7 +754,7 @@ model Watchlist {
 model AnalysisUsage {
   id        String   @id @default(cuid())
   userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      CpUser     @relation(fields: [userId], references: [id], onDelete: Cascade)
   storeId   String
   store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
@@ -1099,7 +995,7 @@ model PromoCode {
   /// PERCENT: integer 1-100. FIXED: integer cents, >= 1.
   discountValue    Int
   /// Null means valid against any plan.
-  appliesToPlan    PlanTier?
+  appliesToPlan    String?
   /// Null means unlimited total redemptions.
   maxRedemptions   Int?
   perUserLimit     Int          @default(1)
@@ -1148,7 +1044,7 @@ model PromoRedemption {
 model Checkout {
   id             String         @id @default(cuid())
   userId         String
-  plan           PlanTier
+  plan           String
   period         String
   promoCodeId    String?
   listPriceCents Int
@@ -1173,7 +1069,7 @@ model Checkout {
 model Subscription {
   id        String             @id @default(cuid())
   userId    String
-  plan      PlanTier
+  plan      String
   source    SubscriptionSource
   status    SubscriptionStatus @default(ACTIVE)
   startedAt DateTime           @default(now())
@@ -1310,6 +1206,9 @@ model MarketingConversionEvent {
 model UserAdminRole {
   userId String @id
   role   Role
+  /// FK -> control_plane.users(id), added by migration 20260828180000. Relation
+  /// field added in B2 2·B commit 3a for the admin-user queries.
+  user   CpUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([role])
   @@map("UserAdminRole")
@@ -1325,6 +1224,9 @@ model MarketingConsent {
   consent       Boolean   @default(false)
   consentAt     DateTime? @map("consent_at")
   consentSource String?   @map("consent_source")
+  /// FK -> control_plane.users(id), added by migration 20260828180000. Relation
+  /// field added in B2 2·B commit 3a for the admin-user / GDPR-export queries.
+  user          CpUser    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("MarketingConsent")
   @@schema("store_spy")
@@ -1404,6 +1306,9 @@ model CpUser {
   passwordHash String?       @map("password_hash")
   accountRole  CpAccountRole @default(OWNER) @map("account_role")
   createdAt    DateTime      @default(now()) @map("created_at")
+  /// Mirrors the old store_spy.User.updatedAt (B2 step 3 prep migration). Read
+  /// by the GDPR self-export.
+  updatedAt    DateTime      @updatedAt @map("updated_at")
 
   // --- B2 step 1: identity columns migrated off store_spy.User. Nullable so
   // the additive migration doesn't need a value for every column on every
@@ -1417,6 +1322,20 @@ model CpUser {
   /// Terms of Service acceptance — with the company (Bellwether Intelligence),
   /// not the product, so it lives here rather than in a store_spy table (Q5).
   tosAcceptedAt      DateTime? @map("tos_accepted_at")
+
+  /// Back-relations onto the product-specific companion tables and the
+  /// store_spy child models. All cross-schema; every FK points at
+  /// control_plane.users (migration 20260828180000) with ON DELETE CASCADE,
+  /// so deleting a CpUser (or its CpAccount) erases the whole store_spy
+  /// footprint. B2 2·B step 4: the store_spy child relations moved here from
+  /// the dropped `model User`.
+  adminRole        UserAdminRole?
+  marketingConsent MarketingConsent?
+  accounts         Account[]
+  sessions         Session[]
+  watchlists       Watchlist[]
+  analysisUsage    AnalysisUsage[]
+  permissionGrants AdminPermissionGrant[]
 
   @@index([accountId])
   @@map("users")
@@ -1489,6 +1408,14 @@ model CpSubscription {
   periodEnd   DateTime?            @map("period_end")
   /// The provider's subscription handle, once one exists. Null until then.
   providerRef String?              @map("provider_ref")
+  /// The tier this subscription is for — "FREE" / "BASIC" / "BUSINESS" today.
+  /// A plain string, NOT a control_plane enum: pricing/tier changes and other
+  /// products' tier names must not each require a migration, and the
+  /// store_spy.PlanTier enum itself is dropped in step 4. Answers "what did
+  /// this account buy" directly, so tier is never inferred from entitlement
+  /// quota values. Nullable only until B2 2·B commit 3 makes every writer
+  /// populate it (commit 3 tightens it to NOT NULL).
+  planSlug    String?              @map("plan_slug")
   createdAt   DateTime             @default(now()) @map("created_at")
 
   entitlements CpEntitlement[]

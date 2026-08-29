@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getDailyAnalysesTrend, getUsageCostMetrics } from "../usage-cost";
 import { SERPAPI_COST_PER_CALL_CENTS } from "../vendor-cost";
 import { makeStoreSpyUser, resetControlPlane } from "../../../test-support/store-spy-user";
+import { syncControlPlanePlan } from "../../../control-plane/provision";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
@@ -11,7 +12,7 @@ const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "MarketingCollectionRun","Watchlist","AnalysisUsage","Crawl","Session","Account","Store","User" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "MarketingCollectionRun","Watchlist","AnalysisUsage","Crawl","Session","Account","Store" RESTART IDENTITY CASCADE`,
   );
   await resetControlPlane(prisma);
 });
@@ -42,6 +43,22 @@ describe("getUsageCostMetrics", () => {
 
     const metrics = await getUsageCostMetrics(prisma, WINDOW_START, WINDOW_END);
     expect(metrics.analysesByPlan).toEqual({ FREE: 2, BASIC: 0, BUSINESS: 3 });
+  });
+
+  it("attributes a lapsed paid account's analyses to FREE, not the tier it once bought", async () => {
+    // plan_slug is still 'BUSINESS', but the paid period ended yesterday and
+    // the sweep hasn't run — the account is being served FREE-tier, so its
+    // cost is FREE-tier cost.
+    const lapsed = await makeUser("BUSINESS");
+    await syncControlPlanePlan(prisma, { userId: lapsed.id, plan: "BUSINESS", trialEndsAt: null, paidPeriodEnd: new Date(Date.now() - 24 * 60 * 60_000) });
+    const store = await makeStore();
+    for (let i = 0; i < 4; i++) {
+      const row = await prisma.analysisUsage.create({ data: { userId: lapsed.id, storeId: store.id } });
+      await prisma.analysisUsage.update({ where: { id: row.id }, data: { createdAt: INSIDE } });
+    }
+
+    const metrics = await getUsageCostMetrics(prisma, WINDOW_START, WINDOW_END);
+    expect(metrics.analysesByPlan).toEqual({ FREE: 4, BASIC: 0, BUSINESS: 0 });
   });
 
   it("computes crawl failure rate as FAILED / total crawls started in the window", async () => {

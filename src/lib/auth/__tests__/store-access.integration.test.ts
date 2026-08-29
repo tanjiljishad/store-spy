@@ -45,14 +45,14 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","User","Store" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","Store" RESTART IDENTITY CASCADE`,
   );
   _resetRateLimitState();
   await resetControlPlane(prisma);
 });
 
 function mockSignedInAs(userId: string) {
-  vi.mocked(getCurrentUser).mockResolvedValue({ id: userId, email: "", plan: "FREE", role: "USER" });
+  vi.mocked(getCurrentUser).mockResolvedValue({ id: userId, email: "", role: "USER" });
 }
 function mockAnonymous() {
   vi.mocked(getCurrentUser).mockResolvedValue(null);

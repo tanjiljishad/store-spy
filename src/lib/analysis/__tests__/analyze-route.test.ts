@@ -42,15 +42,17 @@ vi.mock("@/lib/analysis/anonymous-probe", () => ({
 }));
 // Defaults to a signed-in user. The anonymous case gets its own describe
 // block below, which overrides this per-test.
-const getCurrentUserMock = vi.fn<() => Promise<{ id: string; email: string; plan: "FREE" } | null>>(async () => ({
+const getCurrentUserMock = vi.fn<() => Promise<{ id: string; email: string } | null>>(async () => ({
   id: "user-1",
   email: "user@example.com",
-  plan: "FREE",
 }));
 vi.mock("@/lib/auth/session", () => ({
   getCurrentUser: () => getCurrentUserMock(),
 }));
 vi.mock("@/lib/db/prisma", () => ({ prisma: {} }));
+// The route fetches a coarse plan label for the LIMIT_REACHED envelope; this
+// suite is about routing / SSE lifecycle, so stub it.
+vi.mock("@/lib/control-plane/entitlements", () => ({ getPurchasedPlanSlug: vi.fn(async () => "FREE") }));
 
 const { POST } = await import("../../../app/api/analyze/route");
 const { _resetRateLimitState } = await import("../../security/rate-limit");
@@ -60,7 +62,7 @@ beforeEach(() => {
   runAnalysisMock.mockClear();
   runAnonymousProbeMock.mockClear();
   getCurrentUserMock.mockClear();
-  getCurrentUserMock.mockResolvedValue({ id: "user-1", email: "user@example.com", plan: "FREE" });
+  getCurrentUserMock.mockResolvedValue({ id: "user-1", email: "user@example.com" });
   releaseSecondEvent = null;
 });
 

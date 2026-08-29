@@ -35,7 +35,7 @@ if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with
 const prisma = new PrismaClient();
 
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "Session","Account","User" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "Session","Account" RESTART IDENTITY CASCADE`);
   _resetRateLimitState();
   vi.mocked(getCurrentUser).mockReset();
   await resetControlPlane(prisma);
@@ -61,38 +61,38 @@ describe("POST /api/account/consent", () => {
 
   it("400s when tosAccepted is missing or false — never sets tosAcceptedAt", async () => {
     const user = await makeOAuthShapedUser();
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const missing = await postConsent(req({}));
     expect(missing.status).toBe(400);
     const explicitFalse = await postConsent(req({ tosAccepted: false }));
     expect(explicitFalse.status).toBe(400);
 
-    const stillPending = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const stillPending = await prisma.cpUser.findUniqueOrThrow({ where: { id: user.id } });
     expect(stillPending.tosAcceptedAt).toBeNull();
   });
 
   it("with tosAccepted true, sets tosAcceptedAt and leaves marketingConsent false by default", async () => {
     const user = await makeOAuthShapedUser();
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const res = await postConsent(req({ tosAccepted: true }));
     expect(res.status).toBe(200);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const updated = await prisma.cpUser.findUniqueOrThrow({ where: { id: user.id } });
     expect(updated.tosAcceptedAt).not.toBeNull();
-    expect(updated.marketingConsent).toBe(false);
+    expect((await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } })).consent).toBe(false);
   });
 
   it("with tosAccepted true and marketingConsent true, grants marketing consent with the oauth source", async () => {
     const user = await makeOAuthShapedUser();
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const res = await postConsent(req({ tosAccepted: true, marketingConsent: true }));
     expect(res.status).toBe(200);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updated.marketingConsent).toBe(true);
-    expect(updated.marketingConsentSource).toBe("oauth_welcome_interstitial");
+    const updated = await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(updated.consent).toBe(true);
+    expect(updated.consentSource).toBe("oauth_welcome_interstitial");
   });
 });

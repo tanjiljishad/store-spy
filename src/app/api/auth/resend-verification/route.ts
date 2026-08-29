@@ -27,10 +27,10 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "Too many requests. Try again in a minute." }, { status: 429 });
   }
 
-  // Fresh read, not the JWT-cached actor — emailVerified isn't a session claim.
-  const fresh = await prisma.user.findUnique({ where: { id: actor.id }, select: { email: true, emailVerified: true } });
+  // Fresh read, not the JWT-cached actor — emailVerifiedAt isn't a session claim.
+  const fresh = await prisma.cpUser.findUnique({ where: { id: actor.id }, select: { email: true, emailVerifiedAt: true } });
   if (!fresh) return Response.json({ error: "Account not found." }, { status: 404 });
-  if (fresh.emailVerified) return Response.json({ status: "already_verified" });
+  if (fresh.emailVerifiedAt) return Response.json({ status: "already_verified" });
 
   try {
     await sendVerificationEmail(req.nextUrl.origin, actor.id, fresh.email);

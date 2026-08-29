@@ -7,7 +7,7 @@ import { prisma } from "../db/prisma";
 import { controlPlaneAdapter } from "./control-plane-adapter";
 import { authorizeCredentials } from "./authorize-credentials";
 import { getClientIp } from "../security/rate-limit";
-import { refreshJwtToken } from "./jwt-plan-refresh";
+import { refreshSessionToken } from "./jwt-session-refresh";
 
 /**
  * Auth.js v5, three providers unified onto the one Prisma `User` model via
@@ -24,11 +24,11 @@ import { refreshJwtToken } from "./jwt-plan-refresh";
  * everywhere" the way revoking a database session row would give you — see
  * AGENTS.md / the Milestone 3 report for why that tradeoff was accepted.
  * Milestone 11 closes most of the gap without switching strategies:
- * `User.sessionsValidAfter` (checked via refreshJwtToken() below, see
- * jwt-plan-refresh.ts) rejects any token issued before it was set, bounded
- * by PLAN_CHECK_TTL_MS — so revocation lands within 60 seconds, not
- * instantly, but without needing a database round trip on every single
- * request either.
+ * `control_plane.users.sessions_valid_after` (checked via
+ * refreshSessionToken() below, see jwt-session-refresh.ts) rejects any token
+ * issued before it was set, bounded by SESSION_CHECK_TTL_MS — so revocation
+ * lands within 60 seconds, not instantly, but without needing a database
+ * round trip on every single request either.
  *
  * Google/Facebook are only registered when their env vars are present, so
  * a deployment (or this sandbox) without OAuth app credentials still gets
@@ -131,15 +131,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     async jwt({ token, user }) {
       if (user) token.id = user.id;
-      const refreshed = await refreshJwtToken(token, Boolean(user), (userId) =>
-        prisma.user.findUnique({ where: { id: userId }, select: { plan: true, role: true, sessionsValidAfter: true } }),
-      );
+      // B2 2·B: identity is `control_plane.users` (existence + revocation
+      // floor); `role` is still a store_spy concern (UserAdminRole; the
+      // staff split is B2.5). No `plan` — gates fetch entitlements live.
+      const refreshed = await refreshSessionToken(token, Boolean(user), async (userId) => {
+        const [cp, adminRole] = await Promise.all([
+          prisma.cpUser.findUnique({ where: { id: userId }, select: { sessionsValidAfter: true } }),
+          prisma.userAdminRole.findUnique({ where: { userId }, select: { role: true } }),
+        ]);
+        if (!cp) return null;
+        return { role: adminRole?.role ?? "USER", sessionsValidAfter: cp.sessionsValidAfter };
+      });
       return refreshed as typeof token;
     },
     async session({ session, token }) {
       if (session.user && token.id) {
         session.user.id = token.id as string;
-        session.user.plan = (token.plan as string) ?? "FREE";
         session.user.role = (token.role as string) ?? "USER";
       }
       return session;

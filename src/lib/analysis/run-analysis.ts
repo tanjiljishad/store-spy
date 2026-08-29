@@ -222,7 +222,7 @@ export async function runAnalysis(args: RunAnalysisArgs): Promise<void> {
   // (two simultaneous requests from a user with one credit left cannot
   // both succeed) — the pre-check above is just a fast-fail optimization,
   // this is the real gate.
-  const usage = await recordAnalysisUsage(prisma, caller.userId, store.id, caller.plan);
+  const usage = await recordAnalysisUsage(prisma, caller.userId, store.id);
   if (usage.outcome === "limit_reached") {
     emitLimitReached(onEvent, usage.current, usage.max, usage.resetsAt, caller.plan);
     return;
