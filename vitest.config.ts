@@ -11,6 +11,12 @@ import path from "node:path";
  * The `@` alias mirrors vitest.integration.config.ts's — added when the first
  * unit test needed to import a route file (which uses `@/...` imports, unlike
  * plain src/lib modules, which use relative imports and never needed this).
+ *
+ * import.meta.dirname (not __dirname): Vite's forthcoming native config loader
+ * doesn't provide the CJS __dirname global. Node >= 20.11 / 22 has this.
+ *
+ * Pool is left at the Vitest 4 default (`forks`); see the note in
+ * vitest.integration.config.ts for why `threads` is avoided.
  */
 export default defineConfig({
   test: {
@@ -19,7 +25,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
 });

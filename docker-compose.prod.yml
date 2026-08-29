@@ -1,0 +1,47 @@
+# Production / self-host override for docker-compose.yml.
+#
+# Use ONLY together with the base file, and only on a host that PULLS the
+# CI-built image from GHCR — nothing is built on the deploy host (see
+# docs/staging-deployment.md, "Build & image"). The base file's `build: .` is
+# dropped here via the `!reset` tag (Docker Compose >= 2.24).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# deploy/contabo-deploy.sh wraps exactly that, plus `docker login ghcr.io`, a
+# /api/health gate, a rollback path, and image pruning.
+#
+# IMAGE / IMAGE_TAG are interpolated from the environment (the deploy script
+# exports them from deploy/deploy.env). Default keeps the OWNER/REPO placeholder
+# so a bare `docker compose ... config` fails loudly rather than pulling a wrong
+# image — set them for real.
+
+services:
+  postgres:
+    restart: unless-stopped
+
+  web:
+    build: !reset null
+    image: ${IMAGE:-ghcr.io/OWNER/REPO}:${IMAGE_TAG:-latest}
+    pull_policy: always
+    restart: unless-stopped
+
+  worker:
+    build: !reset null
+    image: ${IMAGE:-ghcr.io/OWNER/REPO}:${IMAGE_TAG:-latest}
+    pull_policy: always
+    restart: unless-stopped
+
+# Managed Postgres instead of the in-stack one? Don't start the `postgres`
+# service (`docker compose ... up -d web worker`) and override the database URL
+# for both app services — the base file hard-codes it to the `postgres` service:
+#
+#   web:
+#     environment:
+#       DATABASE_URL: "postgresql://USER:PASS@HOST/DB?options=-c%20search_path%3Dstore_spy%2Cpublic"
+#   worker:
+#     environment:
+#       DATABASE_URL: "postgresql://USER:PASS@HOST/DB?options=-c%20search_path%3Dstore_spy%2Cpublic"
+#
+# (no `?schema=` — the web service refuses to boot otherwise; see
+# docs/environment-variables.md.)

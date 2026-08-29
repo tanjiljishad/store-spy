@@ -4,3 +4,6 @@ node_modules/
 .next/
 next-env.d.ts
 *.zip
+
+# Deploy-host credentials (GHCR PAT etc.) — see deploy/deploy.env.example
+deploy/deploy.env
