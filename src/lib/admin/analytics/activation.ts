@@ -6,9 +6,10 @@ import { utcParam } from "./window";
  * that add a watch within 7 days. If activation is low, pricing is not the
  * problem."
  *
- * `u."createdAt" + interval '24 hours'` is plain arithmetic on a
- * timestamp(3) column — no session-timezone conversion happens (there's no
- * cast to/from timestamptz involved), so this needs no utcParam() wrapping;
+ * B2 2·B commit 3d: the signup cohort comes from `control_plane.users`, not
+ * `store_spy.User`. `u."created_at" + interval '24 hours'` is plain arithmetic
+ * on a timestamp(3) column — no session-timezone conversion happens (there's
+ * no cast to/from timestamptz involved), so this needs no utcParam() wrapping;
  * only the outer window boundary parameters do. See window.ts's header
  * comment for why those are two different rules.
  */
@@ -32,17 +33,17 @@ export async function getActivationMetrics(prisma: PrismaClient, windowStart: Da
       COUNT(*) FILTER (
         WHERE EXISTS (
           SELECT 1 FROM "AnalysisUsage" au
-          WHERE au."userId" = u.id AND au."createdAt" <= u."createdAt" + interval '24 hours'
+          WHERE au."userId" = u.id AND au."createdAt" <= u."created_at" + interval '24 hours'
         )
       )::int AS activated_24h,
       COUNT(*) FILTER (
         WHERE EXISTS (
           SELECT 1 FROM "Watchlist" w
-          WHERE w."userId" = u.id AND w."addedAt" <= u."createdAt" + interval '7 days'
+          WHERE w."userId" = u.id AND w."addedAt" <= u."created_at" + interval '7 days'
         )
       )::int AS watched_7d
-    FROM "User" u
-    WHERE u."createdAt" >= ${start} AND u."createdAt" < ${end}
+    FROM "control_plane"."users" u
+    WHERE u."created_at" >= ${start} AND u."created_at" < ${end}
   `;
 
   const { signups, activated_24h, watched_7d } = rows[0];

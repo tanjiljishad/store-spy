@@ -43,8 +43,8 @@ export async function getFunnelCounts(prisma: PrismaClient, windowStart: Date, w
       WHERE "createdAt" >= ${start} AND "createdAt" < ${end}
     `,
     prisma.$queryRaw<{ n: number }[]>`
-      SELECT COUNT(*)::int AS n FROM "User"
-      WHERE "createdAt" >= ${start} AND "createdAt" < ${end}
+      SELECT COUNT(*)::int AS n FROM "control_plane"."users"
+      WHERE "created_at" >= ${start} AND "created_at" < ${end}
     `,
     prisma.$queryRaw<{ n: number }[]>`
       SELECT COUNT(*)::int AS n FROM (

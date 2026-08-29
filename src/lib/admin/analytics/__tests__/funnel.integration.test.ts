@@ -28,7 +28,7 @@ const AFTER = new Date("2026-08-10T12:00:00Z");
 
 async function makeUser(createdAt: Date) {
   const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-  await prisma.user.update({ where: { id: user.id }, data: { createdAt } });
+  await prisma.cpUser.update({ where: { id: user.id }, data: { createdAt } });
   return user;
 }
 async function makeStore() {

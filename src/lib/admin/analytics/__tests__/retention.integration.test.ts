@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getCohortRetention } from "../retention";
 import { makeStoreSpyUser, resetControlPlane } from "../../../test-support/store-spy-user";
+import { syncControlPlanePlan } from "../../../control-plane/provision";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
@@ -18,7 +19,7 @@ const RANGE_END = new Date("2026-09-01T00:00:00Z");
 
 async function makeUser(createdAt: Date, plan: "FREE" | "BASIC" | "BUSINESS" = "FREE") {
   const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan });
-  await prisma.user.update({ where: { id: user.id }, data: { createdAt } });
+  await prisma.cpUser.update({ where: { id: user.id }, data: { createdAt } });
   return user;
 }
 
@@ -55,5 +56,22 @@ describe("getCohortRetention", () => {
     const july = cohorts.find((c) => c.cohortMonth.toISOString() === "2026-07-01T00:00:00.000Z")!;
     expect(july.currentlyPaid).toBe(1);
     expect(july.everPaid).toBe(0); // no Subscription row — currentlyPaid and everPaid are genuinely independent signals
+  });
+
+  it("currentlyPaid does NOT count a lapsed paid account the sweep hasn't demoted yet", async () => {
+    // plan_slug is still 'BASIC' (what they bought), but the paid period ended
+    // yesterday and expireDueSubscriptions hasn't run — resolveEntitlement would
+    // report this account as subscription_inactive, and so must this metric.
+    const lapsed = await makeUser(new Date("2026-07-05T00:00:00Z"), "BASIC");
+    await syncControlPlanePlan(prisma, {
+      userId: lapsed.id,
+      plan: "BASIC",
+      trialEndsAt: null,
+      paidPeriodEnd: new Date(Date.now() - 24 * 60 * 60_000),
+    });
+
+    const cohorts = await getCohortRetention(prisma, RANGE_START, RANGE_END);
+    const july = cohorts.find((c) => c.cohortMonth.toISOString() === "2026-07-01T00:00:00.000Z")!;
+    expect(july.currentlyPaid).toBe(0);
   });
 });

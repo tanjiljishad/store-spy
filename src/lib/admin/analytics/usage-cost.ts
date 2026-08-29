@@ -19,6 +19,14 @@ import { startOfUtcDay, utcParam } from "./window";
  * cost counted once (EXISTS, not a join that would multiply rows) — the
  * vendor call happened once regardless of how many accounts watch that
  * store, so double-counting it per watcher would overstate real spend.
+ *
+ * B2 2·B commit 3d: every `plan` here is the account's CURRENTLY-EFFECTIVE
+ * tier — the `plan_slug` of an ACTIVE control-plane subscription whose
+ * `period_end` is null or in the future (the same condition resolveEntitlement
+ * applies), COALESCEd to 'FREE' when there is none. A lapsed BASIC/BUSINESS
+ * account is serving FREE-tier cost and is counted as FREE, not as the tier it
+ * once bought — attributing its spend to a paid tier would overstate that
+ * tier's cost and the paid-account denominator alike.
  */
 
 const ZERO_BY_PLAN = (): Record<PlanTier, number> => ({ FREE: 0, BASIC: 0, BUSINESS: 0 });
@@ -41,14 +49,21 @@ export interface UsageCostMetrics {
 export async function getUsageCostMetrics(prisma: PrismaClient, windowStart: Date, windowEnd: Date): Promise<UsageCostMetrics> {
   const start = utcParam(windowStart);
   const end = utcParam(windowEnd);
+  const now = utcParam(new Date());
 
   const [analysesRows, crawlRows, serpRows, businessSerpRows, businessAccountRows] = await Promise.all([
     prisma.$queryRaw<{ plan: PlanTier; n: number }[]>`
-      SELECT u.plan, COUNT(*)::int AS n
+      SELECT
+        COALESCE((
+          SELECT s.plan_slug FROM "control_plane"."subscriptions" s
+          WHERE s."account_id" = 'acct_' || au."userId" AND s.status = 'ACTIVE'
+            AND (s.period_end IS NULL OR s.period_end > ${now})
+          ORDER BY s."created_at" DESC LIMIT 1
+        ), 'FREE') AS plan,
+        COUNT(*)::int AS n
       FROM "AnalysisUsage" au
-      JOIN "User" u ON u.id = au."userId"
       WHERE au."createdAt" >= ${start} AND au."createdAt" < ${end}
-      GROUP BY u.plan
+      GROUP BY 1
     `,
     prisma.$queryRaw<{ status: CrawlStatus; n: number }[]>`
       SELECT status, COUNT(*)::int AS n
@@ -67,15 +82,23 @@ export async function getUsageCostMetrics(prisma: PrismaClient, windowStart: Dat
       WHERE mcr."startedAt" >= ${start} AND mcr."startedAt" < ${end}
         AND EXISTS (
           SELECT 1 FROM "Watchlist" w
-          JOIN "User" u ON u.id = w."userId"
-          WHERE w."storeId" = mcr."storeId" AND w."monitoringStatus" = 'ACTIVE' AND u.plan = 'BUSINESS'
+          WHERE w."storeId" = mcr."storeId" AND w."monitoringStatus" = 'ACTIVE'
+            AND EXISTS (
+              SELECT 1 FROM "control_plane"."subscriptions" s
+              WHERE s."account_id" = 'acct_' || w."userId" AND s.status = 'ACTIVE'
+                AND s.plan_slug = 'BUSINESS' AND (s.period_end IS NULL OR s.period_end > ${now})
+            )
         )
     `,
     prisma.$queryRaw<{ n: number }[]>`
       SELECT COUNT(DISTINCT w."userId")::int AS n
       FROM "Watchlist" w
-      JOIN "User" u ON u.id = w."userId"
-      WHERE w."monitoringStatus" = 'ACTIVE' AND u.plan = 'BUSINESS'
+      WHERE w."monitoringStatus" = 'ACTIVE'
+        AND EXISTS (
+          SELECT 1 FROM "control_plane"."subscriptions" s
+          WHERE s."account_id" = 'acct_' || w."userId" AND s.status = 'ACTIVE'
+            AND s.plan_slug = 'BUSINESS' AND (s.period_end IS NULL OR s.period_end > ${now})
+        )
     `,
   ]);
 
@@ -129,11 +152,19 @@ export async function getDailyAnalysesTrend(prisma: PrismaClient, days: number, 
   const windowStart = new Date(windowEnd.getTime() - days * 24 * 60 * 60_000);
   const start = utcParam(windowStart);
   const end = utcParam(windowEnd);
+  const nowParam = utcParam(new Date());
 
   const rows = await prisma.$queryRaw<{ day: Date; plan: PlanTier; n: number }[]>`
-    SELECT date_trunc('day', au."createdAt") AS day, u.plan, COUNT(*)::int AS n
+    SELECT
+      date_trunc('day', au."createdAt") AS day,
+      COALESCE((
+        SELECT s.plan_slug FROM "control_plane"."subscriptions" s
+        WHERE s."account_id" = 'acct_' || au."userId" AND s.status = 'ACTIVE'
+          AND (s.period_end IS NULL OR s.period_end > ${nowParam})
+        ORDER BY s."created_at" DESC LIMIT 1
+      ), 'FREE') AS plan,
+      COUNT(*)::int AS n
     FROM "AnalysisUsage" au
-    JOIN "User" u ON u.id = au."userId"
     WHERE au."createdAt" >= ${start} AND au."createdAt" < ${end}
     GROUP BY 1, 2
     ORDER BY 1, 2

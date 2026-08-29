@@ -5,6 +5,7 @@ import { getFunnelCounts } from "../funnel";
 import { getCohortRetention } from "../retention";
 import { getDailyAnalysesTrend } from "../usage-cost";
 import { makeStoreSpyUser, resetControlPlane } from "../../../test-support/store-spy-user";
+import { syncControlPlanePlan } from "../../../control-plane/provision";
 
 /**
  * Regression coverage for the exact class of bug AGENTS.md's Database time
@@ -67,7 +68,7 @@ describe(`analytics queries stay UTC-correct under a non-UTC session timezone ($
     // 6 hours, which would OUTSIDE-the-window a signup this close to the edge.
     const justInsideWindowEnd = new Date("2026-08-07T23:30:00Z");
     const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-    await prisma.user.update({ where: { id: user.id }, data: { createdAt: justInsideWindowEnd } });
+    await prisma.cpUser.update({ where: { id: user.id }, data: { createdAt: justInsideWindowEnd } });
 
     const windowStart = new Date("2026-08-01T00:00:00Z");
     const windowEnd = new Date("2026-08-08T00:00:00Z");
@@ -77,7 +78,7 @@ describe(`analytics queries stay UTC-correct under a non-UTC session timezone ($
     // And a signup exactly AT windowEnd must be excluded (half-open [start, end)) — the mirror check.
     const rightAtWindowEnd = new Date("2026-08-08T00:00:00Z");
     const secondUser = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-    await prisma.user.update({ where: { id: secondUser.id }, data: { createdAt: rightAtWindowEnd } });
+    await prisma.cpUser.update({ where: { id: secondUser.id }, data: { createdAt: rightAtWindowEnd } });
     const countsAfter = await getFunnelCounts(prisma, windowStart, windowEnd);
     expect(countsAfter.signups).toBe(1); // still 1, not 2 — the new row is exactly on the excluded boundary
   });
@@ -94,13 +95,34 @@ describe(`analytics queries stay UTC-correct under a non-UTC session timezone ($
     // under +05:45 local time has already rolled into August.
     const lastMomentOfJulyUtc = new Date("2026-07-31T23:00:00Z"); // local: 2026-08-01T04:45 — August locally, July in UTC
     const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
-    await prisma.user.update({ where: { id: user.id }, data: { createdAt: lastMomentOfJulyUtc } });
+    await prisma.cpUser.update({ where: { id: user.id }, data: { createdAt: lastMomentOfJulyUtc } });
 
     const cohorts = await getCohortRetention(prisma, new Date("2026-06-01T00:00:00Z"), new Date("2026-09-01T00:00:00Z"));
     const july = cohorts.find((c) => c.cohortMonth.toISOString() === "2026-07-01T00:00:00.000Z");
     const august = cohorts.find((c) => c.cohortMonth.toISOString() === "2026-08-01T00:00:00.000Z");
     expect(july?.cohortSize).toBe(1); // correct: UTC July, regardless of session zone
     expect(august).toBeUndefined(); // the broken behavior would put this user in August instead
+  });
+
+  it("currentlyPaid's control-plane period_end comparison (getCohortRetention) is not shifted by the session's +05:45 offset", async () => {
+    // B2 2·B commit 3d: currentlyPaid tests `cs.period_end > now` on a bare
+    // timestamp(3) column. `now` goes through utcParam() (AGENTS.md rule 1), so
+    // the comparison must hold in UTC regardless of session zone. A period_end
+    // 30 minutes in the future counts as paid; +05:45 misread would push it
+    // ~6h either way and flip the result.
+    const soon = new Date(Date.now() + 30 * 60_000);
+    const past = new Date(Date.now() - 30 * 60_000);
+    const stillPaid = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
+    await prisma.cpUser.update({ where: { id: stillPaid.id }, data: { createdAt: new Date("2026-07-15T00:00:00Z") } });
+    await syncControlPlanePlan(prisma, { userId: stillPaid.id, plan: "BASIC", trialEndsAt: null, paidPeriodEnd: soon });
+    const lapsed = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com` });
+    await prisma.cpUser.update({ where: { id: lapsed.id }, data: { createdAt: new Date("2026-07-15T00:00:00Z") } });
+    await syncControlPlanePlan(prisma, { userId: lapsed.id, plan: "BASIC", trialEndsAt: null, paidPeriodEnd: past });
+
+    const cohorts = await getCohortRetention(prisma, new Date("2026-06-01T00:00:00Z"), new Date("2026-09-01T00:00:00Z"));
+    const july = cohorts.find((c) => c.cohortMonth.toISOString() === "2026-07-01T00:00:00.000Z")!;
+    expect(july.cohortSize).toBe(2);
+    expect(july.currentlyPaid).toBe(1); // only `stillPaid` — not shifted by the session zone
   });
 
   it("date_trunc('day', ...) daily-trend bucketing (getDailyAnalysesTrend) buckets by the UTC calendar day, not the session-local one", async () => {
