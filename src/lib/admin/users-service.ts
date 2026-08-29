@@ -139,7 +139,7 @@ export async function getUserDetail(prisma: PrismaClient, userId: string): Promi
  * control plane is the sole store of plan — no `store_spy.User.plan` write.
  */
 export async function setUserPlan(
-  db: Pick<PrismaClient, "watchlist" | "cpAccount" | "cpUser" | "cpSubscription" | "cpEntitlement">,
+  db: Pick<PrismaClient, "watchlist" | "cpAccount" | "cpUser" | "cpSubscription" | "cpEntitlement" | "subscription">,
   userId: string,
   plan: PlanTier,
 ): Promise<{ id: string; email: string; plan: PlanTier } | null> {
@@ -155,7 +155,56 @@ export async function setUserPlan(
   // the trial window is whatever it already was (resolveTrialEnd), not reset.
   const trialEndsAt = plan === "FREE" ? await resolveTrialEnd(db, userId) : null;
   await syncControlPlanePlan(db, { userId, plan, trialEndsAt, paidPeriodEnd: null });
+
+  // Audit fix M-5: keep the store_spy.Subscription billing-history table in
+  // step with the control plane — exactly what checkout.ts and
+  // subscription-sweep.ts already do. An admin plan change is the third writer
+  // of "what plan is this account on"; before this it wrote the control plane
+  // only, so a downgrade (or a comp then a downgrade) left a stale ACTIVE row
+  // that revenue.ts / retention.ts kept counting as paying MRR indefinitely.
+  await reconcileBillingHistorySubscription(db, userId, plan);
+
   return { id: cpUser.id, email: cpUser.email, plan };
+}
+
+/**
+ * Bring `store_spy.Subscription` (billing history) into line with an
+ * admin-set plan: close any open row, and for a paid plan open a fresh
+ * `MANUAL` one. Admin-set plans are perpetual, so the new row's `expiresAt`
+ * is null — matching the `paidPeriodEnd: null` handed to syncControlPlanePlan
+ * just above. A closed row gets `expiresAt = now` so churn analytics
+ * (revenue.ts) see a well-formed end date, the same shape the subscription
+ * sweep produces. Idempotent: re-applying the exact same paid plan when there
+ * is already exactly one ACTIVE row on it is a no-op, so repeated admin saves
+ * don't churn billing history.
+ */
+async function reconcileBillingHistorySubscription(
+  db: Pick<PrismaClient, "subscription">,
+  userId: string,
+  plan: PlanTier,
+  now: Date = new Date(),
+): Promise<void> {
+  const active = await db.subscription.findMany({
+    where: { userId, status: "ACTIVE" },
+    select: { id: true, plan: true },
+  });
+
+  if (plan !== "FREE" && active.length === 1 && active[0].plan === plan) {
+    return;
+  }
+
+  if (active.length > 0) {
+    await db.subscription.updateMany({
+      where: { id: { in: active.map((s) => s.id) } },
+      data: { status: "EXPIRED", expiresAt: now },
+    });
+  }
+
+  if (plan !== "FREE") {
+    await db.subscription.create({
+      data: { userId, plan, source: "MANUAL", status: "ACTIVE", startedAt: now, expiresAt: null },
+    });
+  }
 }
 
 export type UpdateUserPlanOutcome = { outcome: "updated"; plan: PlanTier } | { outcome: "user_not_found" };

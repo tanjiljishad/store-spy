@@ -44,7 +44,7 @@ const prisma = new PrismaClient();
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AdminAuditLog","AnalysisUsage","Watchlist","Session","Account","Store" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AdminAuditLog","AnalysisUsage","Watchlist","Session","Account","Store","Subscription" RESTART IDENTITY CASCADE`,
   );
   _resetRateLimitState();
   await resetControlPlane(prisma);
@@ -152,6 +152,36 @@ describe("PATCH /api/admin/users/[id]/plan", () => {
     expect(sub.planSlug).toBe("BASIC");
     const auditRows = await prisma.adminAuditLog.count({ where: { targetId: target.id, action: "user.plan.update" } });
     expect(auditRows).toBe(1);
+  });
+
+  // Audit fix M-5: an admin plan change must keep store_spy.Subscription
+  // (billing history, read by revenue.ts / retention.ts) in step with the
+  // control plane — the same reconciliation checkout.ts and the sweep do.
+  it("reconciles the store_spy.Subscription billing-history row on upgrade and downgrade", async () => {
+    const actor = await makeUser("BILLING_ADMIN");
+    signInAs(actor);
+    const target = await makeUser("USER");
+
+    // A brand-new account has no billing-history row.
+    expect(await prisma.subscription.count({ where: { userId: target.id } })).toBe(0);
+
+    // Upgrade to BASIC → one ACTIVE MANUAL row, perpetual (null expiry).
+    await patchPlan(req("/x", { method: "PATCH", body: JSON.stringify({ plan: "BASIC" }) }), ctx(target.id));
+    const afterUpgrade = await prisma.subscription.findMany({ where: { userId: target.id } });
+    expect(afterUpgrade).toHaveLength(1);
+    expect(afterUpgrade[0]).toMatchObject({ plan: "BASIC", source: "MANUAL", status: "ACTIVE", expiresAt: null });
+
+    // Re-applying the same plan is a no-op — no billing-history churn.
+    await patchPlan(req("/x", { method: "PATCH", body: JSON.stringify({ plan: "BASIC" }) }), ctx(target.id));
+    expect(await prisma.subscription.findMany({ where: { userId: target.id } })).toHaveLength(1);
+
+    // Downgrade to FREE → the ACTIVE row is closed (EXPIRED, dated), no new row.
+    await patchPlan(req("/x", { method: "PATCH", body: JSON.stringify({ plan: "FREE" }) }), ctx(target.id));
+    const afterDowngrade = await prisma.subscription.findMany({ where: { userId: target.id } });
+    expect(afterDowngrade).toHaveLength(1);
+    expect(afterDowngrade[0].status).toBe("EXPIRED");
+    expect(afterDowngrade[0].expiresAt).not.toBeNull();
+    expect(await prisma.subscription.count({ where: { userId: target.id, status: "ACTIVE" } })).toBe(0);
   });
 });
 
