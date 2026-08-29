@@ -76,24 +76,44 @@ in step 3 — flagged, not a blocker.
 
 ## `store_spy.User` → new home (the step-4 gate)
 
-| Column | New home | Readers today (must all be repointed by step 4) |
+**DISCHARGED** as of commit 4 (`466b496`). Sweep evidence:
+
+- `grep -rnE '\b(prisma|tx|db)\.user\.(findUnique|…|deleteMany|count|…)\b' src/`
+  → **one** hit: `account/delete.ts` `tx.user.deleteMany` (tolerant legacy-shadow
+  cleanup, no-op for any account created after commit 3b; removed by step 4's
+  `DROP TABLE`). Zero in tests.
+- `grep -rnE '(FROM|JOIN|INTO|UPDATE|TABLE)\s+"User"' src/` → **zero** in
+  production (all four `admin/analytics` raw-SQL readers repointed in 3d); the
+  47 remaining hits are `beforeEach` `TRUNCATE "…","User",…` — harmless while
+  the table exists, dropped from those lists in step 4.
+- `grep -rn 'TRANSITIONAL (B2 step 2·B)' src/` → **zero**.
+
+| Column | New home | Discharged by |
 |---|---|---|
-| `id` | `control_plane.users.id` — **same value reused**, so every `userId` FK value is unchanged | join key everywhere |
-| `email` | `control_plane.users.email` (`@unique` preserved) | `verify-credentials` (`where:{email}`), `resend-verification`, `account/export`, `billing/checkout`, `dashboard/summary`, `admin/users-service`, `admin/analytics/user-export` |
-| `emailVerified` | `control_plane.users.email_verified_at` | `account/email-verification`, `resend-verification`, auth adapter (`profile()`), OAuth sign-in |
-| `name`, `image` | `control_plane.users.name` / `image` | `verify-credentials` (return), signup (write), auth adapter |
-| `passwordHash` | `control_plane.users.password_hash` | `verify-credentials`, signup (write) |
-| `plan` | **derived** — `control_plane.subscriptions` + `entitlements`, via `/api/internal/entitlements` | `auth.ts` jwt callback, `dashboard/summary`, `entitlements/analysis-usage`, `admin/users-service` (read + `setUserPlan` write), `billing/checkout` (write), `billing/subscription-sweep` (write), `admin/analytics/*` (B2.5) |
-| `role` | `store_spy.UserAdminRole.role` (temp; B2.5 → `control_plane.staff_roles`) | `auth.ts` jwt callback (privileged re-read), `jwt-plan-refresh`, `account/delete` (+ `count SUPER_ADMIN`), `admin/permissions-service`, `admin/users-service` (read/write/`count SUPER_ADMIN`) |
-| `sessionsValidAfter` | `control_plane.users.sessions_valid_after` | `jwt-plan-refresh` (read), `admin/users-service` (revoke-sessions write) |
-| `freeTrialEndsAt` | **derived** — `control_plane.subscriptions.period_end` of the `TRIALING` row | `monitoring/watch` (gate + watch-expiry math), `account/export`, `admin/analytics/user-export` |
-| `marketingConsent` / `…At` / `…Source` | `store_spy.MarketingConsent` | `marketing/consent` (write), `account/consent`, `account/export`, `account/delete`, `admin/analytics/user-export` (marketing filter) |
-| `tosAcceptedAt` | `control_plane.users.tos_accepted_at` | `account/consent` (read + write), signup (write), `DashboardLayout` gate |
-| `createdAt` | `control_plane.users.created_at` | `admin/users-service`, `admin/analytics/user-export` |
-| `updatedAt` | dropped (nothing reads it) | — |
+| `id` | `control_plane.users.id` (same value reused; migration `20260828180000` swapped every `*_userId_fkey` here) | migration M |
+| `email` | `control_plane.users.email` (`@unique`) | commit 2 (verify-credentials) + 3a (resend-verification, verify-email, checkout, summary, users-service, user-export) |
+| `emailVerified` → `email_verified_at` | `control_plane.users.emailVerifiedAt` | 3a (`needsEmailVerification`, verify-email, resend) + 3b (drop shadow write) |
+| `name`, `image` | `control_plane.users.name` / `image` | 2 + 3b (adapter writes `cpUser` only; `image` now on `cpUser`) |
+| `passwordHash` | `control_plane.users.password_hash` | commit 2 |
+| `plan` | **derived** — `getPurchasedPlanSlug()` ← `subscriptions.plan_slug` (label); `resolveEntitlement()` per feature (gate) | 1 (gates) + 3a (readers) + 3b (drop 3 writes) + 3c (`getPurchasedPlanSlug`, `CurrentUser.plan` removed) + 3d (analytics raw SQL) |
+| `role` | `store_spy.UserAdminRole.role` (absent = USER; B2.5 → `control_plane.staff_roles`) | 2 (jwt callback) + 3a (permissions-service, users-service, delete, incl. last-SUPER_ADMIN COUNT) + 3b (drop shadow write) |
+| `sessionsValidAfter` → `sessions_valid_after` | `control_plane.users.sessionsValidAfter` | 2 (jwt-session-refresh) + 3b (drop shadow write in `revokeUserSessions`) |
+| `freeTrialEndsAt` | **derived** — `subscriptions.period_end` of the `subt_` `TRIALING` row (fallback `createdAt + 30d`) | 1 (gate) + 3a (`watch.ts` expiry math) + 3b (`resolveTrialEnd()` for sweep/admin) |
+| `marketingConsent` / `…At` / `…Source` | `store_spy.MarketingConsent` (`consent` / `consentAt` / `consentSource`) | 3a (settings, export, user-export filter) + 3b (`marketing/consent` writes the table only) |
+| `tosAcceptedAt` → `tos_accepted_at` | `control_plane.users.tosAcceptedAt` | 3a (`needsConsentInterstitial`) + 3b (drop shadow writes in signup / consent) |
+| `createdAt` → `created_at` | `control_plane.users.createdAt` (backfill copied verbatim) | 3a (users-service) + 3d (analytics raw SQL) |
+| `updatedAt` → `updated_at` | `control_plane.users.updatedAt` (`@updatedAt`; prep migration `20260829000000`) | 3a (GDPR self-export) |
 
 Relations (`accounts` / `sessions` / `watchlists` / `analysisUsage` /
-`permissionGrants` back-relations): repoint by `userId` value, unchanged.
+`permissionGrants` back-relations): the DB FKs already point at
+`control_plane.users` (migration M); the dead Prisma `@relation` fields on
+`model User` are removed with the model in step 4.
+
+**Step 4 residual tasks** (not readers of data, but they reference `model User`):
+`account/delete.ts:101` `tx.user.deleteMany`; the `Prisma.dmmf … name === "User"`
+exhaustiveness tests in `account/__tests__/export.test.ts` + `admin/analytics/
+__tests__/user-export.test.ts` (repoint to `CpUser` + companion tables); the
+`beforeEach` `TRUNCATE` lists; `docs` cross-refs.
 
 ---
 
