@@ -162,6 +162,10 @@ export const PUBLIC_MARKETING_ROUTES = ["/", "/terms", "/privacy"];
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // B4: emit `.next/standalone/` — a self-contained server bundle with only the
+  // node_modules it actually imports — so the production Docker image copies
+  // that instead of the full dependency tree. `next start` is unaffected.
+  output: "standalone",
   async headers() {
     return [
       {
