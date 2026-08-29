@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { getAnalysisUsage } from "../entitlements/analysis-usage";
 import type { Limit, PlanTier } from "../entitlements/plan-limits";
-import { resolveEntitlement } from "../control-plane/entitlements";
+import { resolveEntitlement, resolvePlanSlug } from "../control-plane/entitlements";
 import { daysRemaining } from "../days-remaining";
 
 /**
@@ -45,7 +45,12 @@ export interface DashboardSummary {
 }
 
 export async function getDashboardSummary(prisma: PrismaClient, userId: string, now: Date = new Date()): Promise<DashboardSummary> {
-  const user = await prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { email: true, plan: true } });
+  // B2 2·B commit 3a: identity from control_plane.users; the coarse plan label
+  // from the purchased-tier column (resolvePlanSlug), not store_spy.User.plan.
+  const [user, plan] = await Promise.all([
+    prisma.cpUser.findUniqueOrThrow({ where: { id: userId }, select: { email: true } }),
+    resolvePlanSlug(prisma, userId, now),
+  ]);
 
   const [usage, usageRows, monitorEnt] = await Promise.all([
     getAnalysisUsage(prisma, userId),
@@ -85,7 +90,7 @@ export async function getDashboardSummary(prisma: PrismaClient, userId: string, 
 
   return {
     email: user.email,
-    plan: user.plan,
+    plan,
     analyses: {
       used: usage.used,
       limit: usage.limit,

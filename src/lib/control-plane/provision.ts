@@ -95,7 +95,7 @@ async function writeStoreSpySubscriptions(
 
   if (args.plan === "FREE") {
     await tx.cpSubscription.create({
-      data: { id: `subf_${args.userId}`, accountId: args.accountId, productId: STORE_SPY_PRODUCT_ID, status: "ACTIVE", periodEnd: null },
+      data: { id: `subf_${args.userId}`, accountId: args.accountId, productId: STORE_SPY_PRODUCT_ID, status: "ACTIVE", planSlug: "FREE", periodEnd: null },
     });
     await tx.cpSubscription.create({
       data: {
@@ -103,6 +103,7 @@ async function writeStoreSpySubscriptions(
         accountId: args.accountId,
         productId: STORE_SPY_PRODUCT_ID,
         status: "TRIALING",
+        planSlug: "FREE",
         periodEnd: args.trialEndsAt ?? trialEndsFromNow(),
       },
     });
@@ -116,7 +117,7 @@ async function writeStoreSpySubscriptions(
   }
 
   await tx.cpSubscription.create({
-    data: { id: `sub_${args.userId}`, accountId: args.accountId, productId: STORE_SPY_PRODUCT_ID, status: "ACTIVE", periodEnd: args.paidPeriodEnd },
+    data: { id: `sub_${args.userId}`, accountId: args.accountId, productId: STORE_SPY_PRODUCT_ID, status: "ACTIVE", planSlug: args.plan, periodEnd: args.paidPeriodEnd },
   });
   await tx.cpEntitlement.createMany({
     data: [

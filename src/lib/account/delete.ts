@@ -40,10 +40,13 @@ export type DeleteOwnAccountOutcome =
 
 export async function deleteOwnAccount(prisma: PrismaClient, userId: string): Promise<DeleteOwnAccountOutcome> {
   return prisma.$transaction(async (tx) => {
-    const user = await tx.user.findUnique({ where: { id: userId }, select: { id: true, role: true } });
+    // B2 2·B commit 3a: existence from control_plane.users; role from
+    // store_spy.UserAdminRole (absence = USER).
+    const user = await tx.cpUser.findUnique({ where: { id: userId }, select: { id: true } });
     if (!user) return { outcome: "user_not_found" };
+    const adminRole = await tx.userAdminRole.findUnique({ where: { userId }, select: { role: true } });
 
-    if (user.role === "SUPER_ADMIN") {
+    if (adminRole?.role === "SUPER_ADMIN") {
       // Same lock key as updateUserRole() (users-service.ts) — a role
       // demotion and a self-deletion racing each other must never both
       // read "count = 2" and both proceed, leaving zero SUPER_ADMINs with
@@ -54,7 +57,7 @@ export async function deleteOwnAccount(prisma: PrismaClient, userId: string): Pr
       // it; they can still delete their account after demoting themselves
       // or promoting a successor.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('admin:super-admin-count')::bigint)`;
-      const superAdminCount = await tx.user.count({ where: { role: "SUPER_ADMIN" } });
+      const superAdminCount = await tx.userAdminRole.count({ where: { role: "SUPER_ADMIN" } });
       if (superAdminCount <= 1) {
         return { outcome: "last_super_admin" };
       }

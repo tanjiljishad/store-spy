@@ -42,16 +42,33 @@ export async function exportUsers(
   opts: { marketingConsentOnly?: boolean } = {},
 ): Promise<UserExportRow[]> {
   const where = buildUserSearchWhere(filters);
-  const rows = await prisma.user.findMany({
+  const rows = await prisma.cpUser.findMany({
     // Milestone 12 §4.1: "purpose: 'marketing' returns only consented
     // users." A plain AND onto the same where clause every other filter
     // already goes through — never a separate query path a future filter
-    // change could apply to one purpose and forget the other.
-    where: opts.marketingConsentOnly ? { ...where, marketingConsent: true } : where,
+    // change could apply to one purpose and forget the other. B2 2·B commit
+    // 3a: consent is the store_spy.MarketingConsent join, not a User column.
+    where: opts.marketingConsentOnly ? { ...where, marketingConsent: { is: { consent: true } } } : where,
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    select: { id: true, email: true, plan: true, role: true, createdAt: true },
+    select: {
+      id: true,
+      email: true,
+      createdAt: true,
+      adminRole: { select: { role: true } },
+      account: {
+        select: {
+          subscriptions: { where: { status: { in: ["ACTIVE", "TRIALING"] } }, select: { planSlug: true }, orderBy: { createdAt: "desc" }, take: 1 },
+        },
+      },
+    },
   });
-  return rows.map((r) => ({ id: r.id, email: r.email, plan: r.plan, role: r.role, createdAt: r.createdAt.toISOString() }));
+  return rows.map((r) => ({
+    id: r.id,
+    email: r.email,
+    plan: (r.account.subscriptions[0]?.planSlug as PlanTier | undefined) ?? "FREE",
+    role: r.adminRole?.role ?? "USER",
+    createdAt: r.createdAt.toISOString(),
+  }));
 }
 
 // A value starting with any of these is a live formula in Excel/Sheets when

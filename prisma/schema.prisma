@@ -1310,6 +1310,9 @@ model MarketingConversionEvent {
 model UserAdminRole {
   userId String @id
   role   Role
+  /// FK -> control_plane.users(id), added by migration 20260828180000. Relation
+  /// field added in B2 2·B commit 3a for the admin-user queries.
+  user   CpUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([role])
   @@map("UserAdminRole")
@@ -1325,6 +1328,9 @@ model MarketingConsent {
   consent       Boolean   @default(false)
   consentAt     DateTime? @map("consent_at")
   consentSource String?   @map("consent_source")
+  /// FK -> control_plane.users(id), added by migration 20260828180000. Relation
+  /// field added in B2 2·B commit 3a for the admin-user / GDPR-export queries.
+  user          CpUser    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("MarketingConsent")
   @@schema("store_spy")
@@ -1420,6 +1426,13 @@ model CpUser {
   /// Terms of Service acceptance — with the company (Bellwether Intelligence),
   /// not the product, so it lives here rather than in a store_spy table (Q5).
   tosAcceptedAt      DateTime? @map("tos_accepted_at")
+
+  /// B2 2·B commit 3a: back-relations onto the two product-specific companion
+  /// tables (both cross-schema, FK added by migration 20260828180000). Let the
+  /// admin user-search / export / GDPR-export queries originate from CpUser and
+  /// filter/join on role + marketing consent without a second round trip.
+  adminRole        UserAdminRole?
+  marketingConsent MarketingConsent?
 
   @@index([accountId])
   @@map("users")

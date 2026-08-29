@@ -64,7 +64,7 @@ export async function processCheckout(prisma: PrismaClient, req: CheckoutRequest
   if (finalCents === 0) {
     const plan = req.plan;
     await prisma.$transaction(async (tx) => {
-      const user = await tx.user.findUniqueOrThrow({ where: { id: req.userId }, select: { email: true } });
+      const user = await tx.cpUser.findUniqueOrThrow({ where: { id: req.userId }, select: { email: true } });
 
       const checkout = await tx.checkout.create({
         data: {

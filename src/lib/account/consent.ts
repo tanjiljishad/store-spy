@@ -8,15 +8,15 @@ import { grantMarketingConsent, OAUTH_WELCOME_CONSENT_SOURCE } from "../marketin
  * that moment, deferred to first dashboard access instead of signup time.
  *
  * `needsConsentInterstitial()` is the ONE condition `DashboardLayout`
- * checks: `tosAcceptedAt IS NULL`. Deliberately not derived from the JWT —
- * this reads a fresh row, mirroring how `/dashboard/settings` already does
- * its own fresh read for fields the session token doesn't carry, rather
- * than extending jwt-plan-refresh.ts's cached-claims machinery for a
- * condition that, once true, never needs to be re-checked more than once
- * per account's whole lifetime.
+ * checks: `control_plane.users.tosAcceptedAt IS NULL`. Deliberately not
+ * derived from the JWT — this reads a fresh row, mirroring how
+ * `/dashboard/settings` already does its own fresh read for fields the
+ * session token doesn't carry, rather than extending jwt-session-refresh.ts's
+ * cached-claims machinery for a condition that, once true, never needs to be
+ * re-checked more than once per account's whole lifetime.
  */
-export async function needsConsentInterstitial(prisma: Pick<PrismaClient, "user">, userId: string): Promise<boolean> {
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { tosAcceptedAt: true } });
+export async function needsConsentInterstitial(prisma: Pick<PrismaClient, "cpUser">, userId: string): Promise<boolean> {
+  const user = await prisma.cpUser.findUnique({ where: { id: userId }, select: { tosAcceptedAt: true } });
   // A user row that's vanished (e.g. mid-deletion) needs no interstitial —
   // there's nothing left to gate, and DashboardLayout's own getCurrentUser()
   // check handles "no real account" separately.

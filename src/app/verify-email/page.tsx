@@ -25,16 +25,16 @@ export default async function VerifyEmailPage({ searchParams }: VerifyEmailPageP
   const { uid, token } = await searchParams;
 
   if (uid && token) {
-    const target = await prisma.user.findUnique({ where: { id: uid }, select: { email: true, emailVerified: true } });
-    const alreadyVerified = Boolean(target?.emailVerified);
+    const target = await prisma.cpUser.findUnique({ where: { id: uid }, select: { email: true, emailVerifiedAt: true } });
+    const alreadyVerified = Boolean(target?.emailVerifiedAt);
     const valid = Boolean(target) && verifyEmailVerificationToken(uid, target!.email, token);
 
     if (valid && !alreadyVerified) {
       const verifiedAt = new Date();
-      // TRANSITIONAL (B2 step 2·B): dual-write. 2·B repoints needsEmailVerification()
-      // to control_plane.users and drops the shadow store_spy.User write.
-      await prisma.user.update({ where: { id: uid }, data: { emailVerified: verifiedAt } });
       await prisma.cpUser.updateMany({ where: { id: uid }, data: { emailVerifiedAt: verifiedAt } });
+      // TRANSITIONAL (B2 step 2·B): the shadow store_spy.User write. 3a repointed
+      // every emailVerified reader to control_plane.users; 3b drops this line.
+      await prisma.user.update({ where: { id: uid }, data: { emailVerified: verifiedAt } });
     }
 
     // Idempotent — re-clicking an already-used link is a harmless no-op
@@ -75,11 +75,11 @@ export default async function VerifyEmailPage({ searchParams }: VerifyEmailPageP
   if (!user) {
     redirect("/login");
   }
-  const fresh = await prisma.user.findUnique({ where: { id: user.id }, select: { email: true, emailVerified: true } });
+  const fresh = await prisma.cpUser.findUnique({ where: { id: user.id }, select: { email: true, emailVerifiedAt: true } });
   if (!fresh) {
     redirect("/login");
   }
-  if (fresh.emailVerified) {
+  if (fresh.emailVerifiedAt) {
     redirect("/dashboard");
   }
 

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { expireDueWatches, startMonitoring, stopMonitoring } from "../watch";
 import { clearTrialCeiling } from "../../billing/subscription-sweep";
-import { expireTrialWindow, makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
+import { setTrialWindow, makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
@@ -39,7 +39,7 @@ describe("monitoring entitlements", () => {
   // premise no longer holds now that FREE carries a real trial ceiling.
   it("a FREE user's watch expires once freeTrialEndsAt passes, and the store's tier recomputes", async () => {
     const account = await user();
-    await prisma.user.update({ where: { id: account.id }, data: { freeTrialEndsAt: new Date(NOW.getTime() + 30 * 24 * 60 * 60_000) } });
+    await setTrialWindow(prisma, account.id, new Date(NOW.getTime() + 30 * 24 * 60 * 60_000));
     const watched = await store();
 
     await startMonitoring(prisma, account.id, watched.id, "FREE", NOW);
@@ -62,7 +62,7 @@ describe("monitoring entitlements", () => {
   it("a FREE user whose trial already ended cannot start a NEW watch — rejected with trial_expired, not silently created-then-expired", async () => {
     const account = await user();
     const pastTrialEnd = new Date(NOW.getTime() - 24 * 60 * 60_000); // ended yesterday
-    await expireTrialWindow(prisma, account.id, pastTrialEnd);
+    await setTrialWindow(prisma, account.id, pastTrialEnd);
     const watched = await store();
 
     const result = await startMonitoring(prisma, account.id, watched.id, "FREE", NOW);
@@ -74,7 +74,7 @@ describe("monitoring entitlements", () => {
   // the trial ceiling on the existing watch."
   it("upgrading from FREE to a paid plan lifts the trial ceiling on an existing watch (clearTrialCeiling)", async () => {
     const account = await user();
-    await prisma.user.update({ where: { id: account.id }, data: { freeTrialEndsAt: new Date(NOW.getTime() + 30 * 24 * 60 * 60_000) } });
+    await setTrialWindow(prisma, account.id, new Date(NOW.getTime() + 30 * 24 * 60 * 60_000));
     const watched = await store();
     await startMonitoring(prisma, account.id, watched.id, "FREE", NOW);
 

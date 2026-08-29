@@ -42,32 +42,68 @@ export interface UserSearchFilters {
   limit?: number;
 }
 
-/** Shared by searchUsers() (paginated) and analytics/user-export.ts's exportUsers() (unpaginated) — the one place a plan/role/email filter turns into a Prisma where clause. */
-export function buildUserSearchWhere(opts: Pick<UserSearchFilters, "emailQuery" | "plan" | "role">): Prisma.UserWhereInput {
+/** B2 2·B commit 3a: active/trialing so a lapsed row can't answer "what tier". */
+const LIVE_SUB_STATUS: Prisma.CpSubscriptionWhereInput["status"] = { in: ["ACTIVE", "TRIALING"] };
+
+/** The one CpUser row shape searchUsers() / getUserDetail() / exportUsers() all read: id/email/createdAt plus the joined admin role and the purchased tier. */
+const USER_ROW_SELECT = {
+  id: true,
+  email: true,
+  createdAt: true,
+  adminRole: { select: { role: true } },
+  account: {
+    select: {
+      subscriptions: { where: { status: LIVE_SUB_STATUS }, select: { planSlug: true }, orderBy: { createdAt: "desc" }, take: 1 },
+    },
+  },
+} satisfies Prisma.CpUserSelect;
+
+type UserRow = Prisma.CpUserGetPayload<{ select: typeof USER_ROW_SELECT }>;
+
+function toItem(u: UserRow): UserSearchItem {
   return {
-    ...(opts.emailQuery ? { email: { contains: opts.emailQuery, mode: "insensitive" } } : {}),
-    ...(opts.plan ? { plan: opts.plan } : {}),
-    ...(opts.role ? { role: opts.role } : {}),
+    id: u.id,
+    email: u.email,
+    plan: (u.account.subscriptions[0]?.planSlug as PlanTier | undefined) ?? "FREE",
+    role: u.adminRole?.role ?? "USER",
+    createdAt: u.createdAt.toISOString(),
   };
+}
+
+/**
+ * Shared by searchUsers() (paginated) and analytics/user-export.ts's
+ * exportUsers() (unpaginated) — the one place a plan/role/email filter turns
+ * into a where clause. B2 2·B commit 3a: the query now originates from
+ * control_plane.users. `plan` is a BILLING filter — it matches on the
+ * account's live subscription `planSlug` (what they bought), never on an
+ * entitlement quota value; `role` matches the store_spy.UserAdminRole join
+ * (absence = USER).
+ */
+export function buildUserSearchWhere(opts: Pick<UserSearchFilters, "emailQuery" | "plan" | "role">): Prisma.CpUserWhereInput {
+  const where: Prisma.CpUserWhereInput = {};
+  if (opts.emailQuery) where.email = { contains: opts.emailQuery, mode: "insensitive" };
+  if (opts.plan) where.account = { is: { subscriptions: { some: { planSlug: opts.plan, status: LIVE_SUB_STATUS } } } };
+  if (opts.role) where.adminRole = opts.role === "USER" ? { is: null } : { is: { role: opts.role } };
+  return where;
 }
 
 export async function searchUsers(prisma: PrismaClient, opts: UserSearchFilters = {}): Promise<UserSearchPage> {
   const limit = Math.max(1, Math.min(opts.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE));
   const direction = opts.sort === "createdAt_asc" ? "asc" : "desc";
 
-  const rows = await prisma.user.findMany({
+  const rows = await prisma.cpUser.findMany({
     where: buildUserSearchWhere(opts),
     orderBy: [{ createdAt: direction }, { id: direction }],
     take: limit + 1,
     ...(opts.cursor ? { cursor: { id: opts.cursor }, skip: 1 } : {}),
-    select: { id: true, email: true, plan: true, role: true, createdAt: true },
+    select: USER_ROW_SELECT,
   });
 
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
 
   return {
-    items: page.map((u) => ({ id: u.id, email: u.email, plan: u.plan, role: u.role, createdAt: u.createdAt.toISOString() })),
+    items: page.map(toItem),
     nextCursor: hasMore ? page[page.length - 1].id : null,
   };
 }
@@ -83,10 +119,7 @@ export interface UserDetail {
 }
 
 export async function getUserDetail(prisma: PrismaClient, userId: string): Promise<UserDetail | null> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true, email: true, plan: true, role: true, createdAt: true },
-  });
+  const user = await prisma.cpUser.findUnique({ where: { id: userId }, select: USER_ROW_SELECT });
   if (!user) return null;
 
   const [analysesUsed, activeWatchCount] = await Promise.all([
@@ -94,7 +127,7 @@ export async function getUserDetail(prisma: PrismaClient, userId: string): Promi
     prisma.watchlist.count({ where: { userId, monitoringStatus: "ACTIVE" } }),
   ]);
 
-  return { ...user, createdAt: user.createdAt.toISOString(), analysesUsed, activeWatchCount };
+  return { ...toItem(user), analysesUsed, activeWatchCount };
 }
 
 /**
@@ -143,8 +176,16 @@ export async function updateUserPlanWithAudit(
   plan: PlanTier,
 ): Promise<UpdateUserPlanOutcome> {
   return prisma.$transaction(async (tx) => {
-    const before = await tx.user.findUnique({ where: { id: targetUserId }, select: { plan: true } });
-    if (!before) return { outcome: "user_not_found" };
+    // B2 2·B commit 3a: existence from control_plane.users; the prior tier for
+    // the audit row from the account's live subscription planSlug.
+    const exists = await tx.cpUser.findUnique({ where: { id: targetUserId }, select: { id: true } });
+    if (!exists) return { outcome: "user_not_found" };
+    const beforeSub = await tx.cpSubscription.findFirst({
+      where: { accountId: `acct_${targetUserId}`, status: LIVE_SUB_STATUS },
+      orderBy: { createdAt: "desc" },
+      select: { planSlug: true },
+    });
+    const fromPlan = (beforeSub?.planSlug as PlanTier | undefined) ?? "FREE";
 
     const updated = await setUserPlan(tx, targetUserId, plan);
     if (!updated) return { outcome: "user_not_found" };
@@ -155,7 +196,7 @@ export async function updateUserPlanWithAudit(
       action: "user.plan.update",
       targetType: "User",
       targetId: targetUserId,
-      metadata: { fromPlan: before.plan, toPlan: plan },
+      metadata: { fromPlan, toPlan: plan },
     });
 
     return { outcome: "updated", plan };
@@ -203,20 +244,22 @@ export async function updateUserRole(
   }
 
   return prisma.$transaction(async (tx) => {
-    const target = await tx.user.findUnique({ where: { id: targetUserId }, select: { role: true } });
-    if (!target) return { outcome: "user_not_found" };
+    // B2 2·B commit 3a: existence from control_plane.users; current role from
+    // store_spy.UserAdminRole (absence = USER).
+    const exists = await tx.cpUser.findUnique({ where: { id: targetUserId }, select: { id: true } });
+    if (!exists) return { outcome: "user_not_found" };
+    const currentRole: Role = (await tx.userAdminRole.findUnique({ where: { userId: targetUserId }, select: { role: true } }))?.role ?? "USER";
 
-    if (target.role === "SUPER_ADMIN") {
+    if (currentRole === "SUPER_ADMIN") {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('admin:super-admin-count')::bigint)`;
-      const superAdminCount = await tx.user.count({ where: { role: "SUPER_ADMIN" } });
+      const superAdminCount = await tx.userAdminRole.count({ where: { role: "SUPER_ADMIN" } });
       if (superAdminCount <= 1) {
         return { outcome: "last_super_admin" };
       }
     }
 
-    // TRANSITIONAL (B2 step 2·B): the store_spy.User.role write. 2·A keeps it
-    // next to the store_spy.UserAdminRole write; 2·B repoints role readers
-    // (jwt-session-refresh, account/delete) to UserAdminRole and drops this.
+    // TRANSITIONAL (B2 step 2·B): the store_spy.User.role write. 3a repointed
+    // every role reader to store_spy.UserAdminRole; 3b drops this line.
     await tx.user.update({ where: { id: targetUserId }, data: { role: newRole } });
     if (newRole === "USER") {
       await tx.userAdminRole.deleteMany({ where: { userId: targetUserId } });
@@ -233,7 +276,7 @@ export async function updateUserRole(
       action: "user.role.update",
       targetType: "User",
       targetId: targetUserId,
-      metadata: { fromRole: target.role, toRole: newRole },
+      metadata: { fromRole: currentRole, toRole: newRole },
     });
 
     return { outcome: "updated", role: newRole };
@@ -242,22 +285,21 @@ export async function updateUserRole(
 
 export type RevokeSessionsOutcome = { outcome: "revoked" } | { outcome: "user_not_found" };
 
-/** Sets User.sessionsValidAfter = now() — see jwt-plan-refresh.ts for how the jwt callback enforces it. */
+/** Sets control_plane.users.sessionsValidAfter = now() — see jwt-session-refresh.ts for how the jwt callback enforces it. */
 export async function revokeUserSessions(
   prisma: PrismaClient,
   actor: AdminActor,
   targetUserId: string,
 ): Promise<RevokeSessionsOutcome> {
   return prisma.$transaction(async (tx) => {
-    const target = await tx.user.findUnique({ where: { id: targetUserId }, select: { id: true } });
+    const target = await tx.cpUser.findUnique({ where: { id: targetUserId }, select: { id: true } });
     if (!target) return { outcome: "user_not_found" };
 
     const now = new Date();
-    // TRANSITIONAL (B2 step 2·B): the store_spy.User write. 2·A dual-writes so
-    // the revocation floor is already in control_plane.users when
-    // jwt-session-refresh starts reading it there.
-    await tx.user.update({ where: { id: targetUserId }, data: { sessionsValidAfter: now } });
     await tx.cpUser.updateMany({ where: { id: targetUserId }, data: { sessionsValidAfter: now } });
+    // TRANSITIONAL (B2 step 2·B): the shadow store_spy.User write. The line
+    // above is now the authoritative revocation-floor write; 3b drops this.
+    await tx.user.update({ where: { id: targetUserId }, data: { sessionsValidAfter: now } });
     await recordAdminAction(tx, {
       actorId: actor.id,
       actorEmail: actor.email,

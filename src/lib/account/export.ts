@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { resolvePlanSlug } from "../control-plane/entitlements";
 
 /**
  * Milestone 12 §4.1: GDPR Art. 15 ("right of access") — the user's OWN data,
@@ -46,26 +47,35 @@ export interface AccountExportData {
 }
 
 export async function exportOwnAccountData(prisma: PrismaClient, userId: string): Promise<AccountExportData | null> {
-  const user = await prisma.user.findUnique({
+  // B2 2·B commit 3a: identity from control_plane.users; role from the
+  // store_spy.UserAdminRole join; marketing consent from the
+  // store_spy.MarketingConsent join; plan (coarse label) from the purchased
+  // tier; freeTrialEndsAt from the TRIALING subscription's period_end (null
+  // for an account that has no trial subscription, e.g. a paid one).
+  const user = await prisma.cpUser.findUnique({
     where: { id: userId },
     select: {
       id: true,
       email: true,
-      emailVerified: true,
+      emailVerifiedAt: true,
       name: true,
       image: true,
-      plan: true,
-      role: true,
-      freeTrialEndsAt: true,
-      marketingConsent: true,
-      marketingConsentAt: true,
-      marketingConsentSource: true,
       tosAcceptedAt: true,
       createdAt: true,
       updatedAt: true,
+      adminRole: { select: { role: true } },
+      marketingConsent: { select: { consent: true, consentAt: true, consentSource: true } },
+      account: { select: { subscriptions: { select: { status: true, periodEnd: true } } } },
     },
   });
   if (!user) return null;
+
+  const plan = await resolvePlanSlug(prisma, userId);
+  const role = user.adminRole?.role ?? "USER";
+  const freeTrialEndsAt = user.account.subscriptions.find((s) => s.status === "TRIALING")?.periodEnd ?? null;
+  const marketingConsent = user.marketingConsent?.consent ?? false;
+  const marketingConsentAt = user.marketingConsent?.consentAt ?? null;
+  const marketingConsentSource = user.marketingConsent?.consentSource ?? null;
 
   const [watchlists, analysisUsage, subscriptions, checkouts, promoRedemptions] = await Promise.all([
     prisma.watchlist.findMany({ where: { userId }, select: { storeId: true, addedAt: true, monitoringStatus: true, monitoringStartedAt: true, monitoringExpiresAt: true } }),
@@ -79,15 +89,15 @@ export async function exportOwnAccountData(prisma: PrismaClient, userId: string)
     profile: {
       id: user.id,
       email: user.email,
-      emailVerified: user.emailVerified?.toISOString() ?? null,
+      emailVerified: user.emailVerifiedAt?.toISOString() ?? null,
       name: user.name,
       image: user.image,
-      plan: user.plan,
-      role: user.role,
-      freeTrialEndsAt: user.freeTrialEndsAt?.toISOString() ?? null,
-      marketingConsent: user.marketingConsent,
-      marketingConsentAt: user.marketingConsentAt?.toISOString() ?? null,
-      marketingConsentSource: user.marketingConsentSource,
+      plan,
+      role,
+      freeTrialEndsAt: freeTrialEndsAt?.toISOString() ?? null,
+      marketingConsent,
+      marketingConsentAt: marketingConsentAt?.toISOString() ?? null,
+      marketingConsentSource,
       tosAcceptedAt: user.tosAcceptedAt?.toISOString() ?? null,
       createdAt: user.createdAt.toISOString(),
       updatedAt: user.updatedAt.toISOString(),

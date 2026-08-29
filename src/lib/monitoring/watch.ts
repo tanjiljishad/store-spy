@@ -59,14 +59,18 @@ export async function startMonitoring(
       return { outcome: "limit_reached" as const, current: 0, max: 0 };
     }
 
-    // The per-watch expiry ceiling for a FREE watch is still the user's
-    // freeTrialEndsAt (the sweep mechanism, unchanged in commit 1); only the
-    // GATE above moved to entitlements. Derived from subt_.period_end in a
-    // later commit.
+    // The per-watch expiry ceiling for a FREE watch is the account's monitoring
+    // trial end — the TRIALING subscription's period_end (B2 2·B commit 3a;
+    // this was store_spy.User.freeTrialEndsAt, which the step-1 backfill and
+    // every write path keep byte-identical to subt_.period_end). Only the GATE
+    // above moved to entitlements in commit 1; this is the sweep mechanism.
     let freeTrialEndsAt: Date | null = null;
     if (plan === "FREE") {
-      const user = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { freeTrialEndsAt: true } });
-      freeTrialEndsAt = user.freeTrialEndsAt;
+      const trialSub = await tx.cpSubscription.findFirst({
+        where: { accountId: `acct_${userId}`, status: "TRIALING" },
+        select: { periodEnd: true },
+      });
+      freeTrialEndsAt = trialSub?.periodEnd ?? null;
     }
 
     const activeCount = await tx.watchlist.count({ where: { userId, monitoringStatus: "ACTIVE" } });

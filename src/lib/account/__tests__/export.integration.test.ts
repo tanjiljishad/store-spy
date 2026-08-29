@@ -40,10 +40,11 @@ describe("exportOwnAccountData", () => {
   it("includes the real marketing consent fields", async () => {
     const consentedAt = new Date("2026-08-01T00:00:00Z");
     const user = await makeStoreSpyUser(prisma, { marketingConsent: true });
-    // exact historical timestamp/source this test asserts on:
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { marketingConsentAt: consentedAt, marketingConsentSource: "signup_form" },
+    // exact historical timestamp/source this test asserts on — set on
+    // store_spy.MarketingConsent, the table exportOwnAccountData reads (B2 2·B).
+    await prisma.marketingConsent.update({
+      where: { userId: user.id },
+      data: { consentAt: consentedAt, consentSource: "signup_form" },
     });
     const data = await exportOwnAccountData(prisma, user.id);
     expect(data!.profile.marketingConsent).toBe(true);

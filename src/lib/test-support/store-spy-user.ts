@@ -75,15 +75,17 @@ export async function makeStoreSpyUser(
  * `TRUNCATE "User" CASCADE` does not reach them.
  */
 /**
- * Force a FREE user's monitoring trial to end at `at`, writing BOTH the
- * legacy `store_spy.User.freeTrialEndsAt` (still the per-watch expiry
- * mechanism in B2 2·B commit 1) and the `subt_` TRIALING subscription's
- * `period_end` (what the monitoring gate now reads via resolveEntitlement).
- * They diverged the moment the gate moved to entitlements — set both.
+ * Set a FREE user's monitoring-trial end to `at` (past OR future), writing
+ * BOTH the `subt_` TRIALING subscription's `period_end` — the source of
+ * truth the gate (resolveEntitlement) and the per-watch expiry ceiling
+ * (watch.ts) both read as of B2 2·B commit 3a — AND the legacy shadow
+ * `store_spy.User.freeTrialEndsAt`, so a fixture that still reads the shadow
+ * column sees the same value. Once step 4 drops the column the second write
+ * goes away.
  */
-export async function expireTrialWindow(prisma: PrismaClient, userId: string, at: Date): Promise<void> {
-  await prisma.user.update({ where: { id: userId }, data: { freeTrialEndsAt: at } });
+export async function setTrialWindow(prisma: PrismaClient, userId: string, at: Date): Promise<void> {
   await prisma.cpSubscription.updateMany({ where: { id: `subt_${userId}` }, data: { periodEnd: at } });
+  await prisma.user.update({ where: { id: userId }, data: { freeTrialEndsAt: at } });
 }
 
 export async function resetControlPlane(prisma: PrismaClient): Promise<void> {

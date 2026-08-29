@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getDashboardSummary } from "../summary";
 import { startMonitoring } from "../../monitoring/watch";
-import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
+import { makeStoreSpyUser, resetControlPlane, setTrialWindow } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -31,9 +31,9 @@ beforeEach(async () => {
 async function makeUser(plan: "FREE" | "BASIC" = "FREE") {
   return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan });
 }
-/** Milestone 12 §1.4: pins freeTrialEndsAt relative to the test's own fixed NOW rather than the DB default's real wall-clock time, so daysRemaining math stays deterministic. */
+/** Milestone 12 §1.4: pins the monitoring-trial end relative to the test's own fixed NOW rather than the DB default's real wall-clock time, so daysRemaining math stays deterministic. Writes subt_.period_end (the source watch.ts reads) and the legacy shadow column together — see setTrialWindow. */
 async function setTrialEnd(userId: string, at: Date) {
-  await prisma.user.update({ where: { id: userId }, data: { freeTrialEndsAt: at } });
+  await setTrialWindow(prisma, userId, at);
 }
 async function makeStoreWithProducts(domain: string, count: number) {
   const store = await prisma.store.create({ data: { domain, platform: "SHOPIFY" } });
