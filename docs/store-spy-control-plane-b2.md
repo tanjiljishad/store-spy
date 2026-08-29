@@ -25,7 +25,7 @@ Steps 1–4 and 6 are B2. Step 5 is B2.5. Each step is independently testable.
 | **1** | Additive migration + backfill. `control_plane.users` gains identity columns; `accounts`/`users`/`subscriptions`/`entitlements` backfilled from `store_spy.User`; new `store_spy` homes for `role` and marketing consent, backfilled. **No FK changes** — a `store_spy.* → control_plane.users` FK would require every `userId` to already have a `control_plane.users` row, which nothing but the backfill provides until step 2 writes there. `store_spy.User` untouched and still authoritative. | **Yes** — `down.sql` drops the additions. | nothing. Login still runs entirely off `store_spy.User`; the full test suite is green with this applied. |
 | **2** | Identity + session + gates + billing move to `control_plane`, as one cutover (`plan` is load-bearing across all three and can't be half-migrated). Delivered as **2·A** (additive: signup/adapter write `control_plane.users` + a shadow `store_spy.User`; billing dual-writes) → **migration M** (swap the `userId` FKs to `control_plane.users`, names reused) → **2·B** (`plan` leaves the JWT; gates call the entitlements endpoint; `plan-limits.ts` deleted; shadow write + `User.plan` dual-write dropped). Folds in the old "step 3". **See "Step 2 — detailed plan" below.** | 2·A reversible; M reversible pre-2·B; 2·B hard. `store_spy.User` data still present. | **login** + gating — full auth suite, a real `next start` sign-in (Credentials + OAuth), and a pre-cutover JWT still authorising post-2·B. |
 | **3** | Repoint gates (`run-analysis.ts`, `watch.ts`, `dashboard/summary.ts`, `stores/[domain]/page.tsx`) to the entitlements endpoint. `plan-limits.ts` gutted. `Subscription` + `Checkout` moved to `control_plane`. | Hard. | **analysis + monitoring gating**, **billing writes**. |
-| **4** | Drop `store_spy.User`, `PlanTier` enum, `freeTrialEndsAt`, and the now-dead auth bits. | **No.** Gated on the column-home verification below. | point of no return. |
+| **4** | **DONE** (`e4d62ed`, migration `20260829010000`). `DROP TABLE store_spy."User"` (+ `freeTrialEndsAt` with it); `DROP TYPE store_spy."PlanTier"`; `Subscription`/`Checkout`/`PromoCode` plan columns → `TEXT`; child models relate to `CpUser`; `plan-parity.ts` + `verify:b2-step1` deleted (the matrix ⇄ seed check moved to a no-DB unit test). Verified: migrated from EMPTY (all 27, then full suites + a `getPurchasedPlanSlug`/`resolveEntitlement` FREE/BASIC/lapsed check) and `pre-step4.sql` confirmed to restore cleanly. `migrate diff` shows only pre-existing `control_plane` index/FK-ordering drift (no step-4 discrepancy). | **No.** | point of no return. |
 | **6** | Drop the `Cp` model-name prefix; `store_spy.Account` → `store_spy.OAuthAccount`. Pure rename. | Mechanical. | nothing functional. |
 | 5 (B2.5) | Staff split: admin users → `control_plane.staff` / `staff_roles`; rework `guard.ts` / `roles.ts` / `permissions-service.ts`; rework admin-analytics raw SQL. | — | admin routes. |
 
@@ -105,15 +105,13 @@ in step 3 — flagged, not a blocker.
 | `updatedAt` → `updated_at` | `control_plane.users.updatedAt` (`@updatedAt`; prep migration `20260829000000`) | 3a (GDPR self-export) |
 
 Relations (`accounts` / `sessions` / `watchlists` / `analysisUsage` /
-`permissionGrants` back-relations): the DB FKs already point at
-`control_plane.users` (migration M); the dead Prisma `@relation` fields on
-`model User` are removed with the model in step 4.
-
-**Step 4 residual tasks** (not readers of data, but they reference `model User`):
-`account/delete.ts:101` `tx.user.deleteMany`; the `Prisma.dmmf … name === "User"`
-exhaustiveness tests in `account/__tests__/export.test.ts` + `admin/analytics/
-__tests__/user-export.test.ts` (repoint to `CpUser` + companion tables); the
-`beforeEach` `TRUNCATE` lists; `docs` cross-refs.
+`permissionGrants`): the DB FKs already pointed at `control_plane.users`
+(migration M); **step 4** moved the Prisma `@relation` fields to `CpUser` and
+deleted `model User`. All the "step 4 residual tasks" once listed here —
+`account/delete.ts`'s `tx.user.deleteMany`, the `Prisma.dmmf … name === "User"`
+exhaustiveness tests (now walk `CpUser` + `UserAdminRole` + `MarketingConsent`),
+the 47 `beforeEach TRUNCATE` lists, `scripts/grant-admin.ts` /
+`scripts/set-user-plan.ts` — are **done** in `e4d62ed`.
 
 ---
 
@@ -188,7 +186,7 @@ identical mechanism, identical bound.
 | 1 | `<ts>_b2_step1_control_plane_users_backfill` | hand-written, fully idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`, `INSERT … ON CONFLICT DO NOTHING`): `ALTER control_plane.users ADD COLUMN` ×5, `CREATE store_spy.UserAdminRole` / `MarketingConsent`, backfill. **No FK changes.** `down.sql` included. Additive only. |
 | 2·M | `20260828180000_b2_step2_swap_user_fks_to_control_plane` (branch `control-plane/b2-step-2m`, in review) | Swap `Account` / `AdminPermissionGrant` / `AnalysisUsage` / `Session` / `Watchlist` `*_userId_fkey` from `store_spy.User` to `control_plane.users` (names reused); add the same FK to `UserAdminRole` / `MarketingConsent`. Bundled with the ~38-file fixture migration to `makeStoreSpyUser()` — mandatory once the FK points at `control_plane.users`. Idempotent; `down.sql` (safe pre-2·B). Applied to the test DB; full suite green with **identical per-file test counts** (no assertion drift). |
 | 2 (billing) | `<ts>_b2_step2_move_billing_to_control_plane` | folded in from the old step 3. `ALTER control_plane.subscriptions ADD COLUMN source`; `CREATE control_plane.checkouts`; migrate `store_spy.Subscription`/`Checkout` rows (backfill `source`, re-key `userId` → `account_id`); `period_end` already correct from step 1; drop `store_spy.Subscription`/`Checkout`. Lands with 2·B. |
-| 4 | `<ts>_b2_step4_drop_store_spy_user` | `DROP TABLE store_spy."User"`; `DROP TYPE store_spy."PlanTier"`; drop `freeTrialEndsAt` (already unreferenced). Irreversible — gated on the column-home verification. |
+| 4 | `20260829010000_b2_step4_drop_store_spy_user` **(applied)** | `Subscription`/`Checkout`/`PromoCode` plan columns → `TEXT` (data-preserving `USING ::text`); `DROP TABLE store_spy."User"` (freeTrialEndsAt with it; no inbound FK); `DROP TYPE store_spy."PlanTier"`. `down.sql` is structure-only (not a rollback — stated in its header). Irreversible; gated on the column-home discharge. |
 | 6 | `<ts>_b2_step6_drop_cp_prefix` | `ALTER TABLE store_spy."Account" RENAME TO "OAuthAccount"`; Prisma model renames `Cp*` → plain (no SQL — `@@map` names already unprefixed). |
 
 `prisma migrate diff` cannot express the cross-schema data moves or the
