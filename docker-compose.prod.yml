@@ -1,4 +1,5 @@
-# Production / self-host override for docker-compose.yml.
+# Production / self-host override for docker-compose.yml (Contabo VPS — the
+# authoritative deploy path; Render is a fallback that pulls the same image).
 #
 # Use ONLY together with the base file, and only on a host that PULLS the
 # CI-built image from GHCR — nothing is built on the deploy host (see
@@ -15,9 +16,19 @@
 # exports them from deploy/deploy.env). Default keeps the OWNER/REPO placeholder
 # so a bare `docker compose ... config` fails loudly rather than pulling a wrong
 # image — set them for real.
+#
+# Host exposure: Postgres publishes NO host port here (`ports: !reset []`) — the
+# web and worker containers reach it by service name on the compose network. The
+# `web` port stays bound to 127.0.0.1 (inherited from the base file); the
+# host's reverse proxy (Caddy/nginx) terminates TLS and forwards to it. Nothing
+# in this stack is meant to be reachable on a public interface except through
+# that proxy. See docs/staging-deployment.md, "Host hardening".
 
 services:
   postgres:
+    # Drop the base file's published host port entirely — in production nothing
+    # on the host connects to Postgres directly.
+    ports: !reset []
     restart: unless-stopped
 
   web:
@@ -25,6 +36,13 @@ services:
     image: ${IMAGE:-ghcr.io/OWNER/REPO}:${IMAGE_TAG:-latest}
     pull_policy: always
     restart: unless-stopped
+    # Stated explicitly here (not just inherited from the base file): the web
+    # port is published to LOOPBACK ONLY. The host's reverse proxy (Caddy/nginx)
+    # connects via 127.0.0.1; nothing binds 0.0.0.0. `!override` replaces the
+    # base list rather than concatenating, so a base entry can never re-add a
+    # public binding. Needs Docker Compose >= 2.24.4.
+    ports: !override
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
 
   worker:
     build: !reset null

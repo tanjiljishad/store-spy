@@ -45,9 +45,9 @@ describe("checkRateLimit", () => {
 });
 
 describe("parseTrustedProxyHops", () => {
-  it("defaults to 1 when unset", () => {
-    expect(parseTrustedProxyHops(undefined)).toBe(1);
-    expect(parseTrustedProxyHops("")).toBe(1);
+  it("returns null when unset — there is deliberately no default", () => {
+    expect(parseTrustedProxyHops(undefined)).toBeNull();
+    expect(parseTrustedProxyHops("")).toBeNull();
   });
 
   it("parses a valid non-negative integer", () => {
@@ -55,10 +55,10 @@ describe("parseTrustedProxyHops", () => {
     expect(parseTrustedProxyHops("2")).toBe(2);
   });
 
-  it("falls back to 1 for garbage input", () => {
-    expect(parseTrustedProxyHops("not-a-number")).toBe(1);
-    expect(parseTrustedProxyHops("-1")).toBe(1);
-    expect(parseTrustedProxyHops("1.5")).toBe(1);
+  it("returns null for garbage input rather than a silent fallback", () => {
+    expect(parseTrustedProxyHops("not-a-number")).toBeNull();
+    expect(parseTrustedProxyHops("-1")).toBeNull();
+    expect(parseTrustedProxyHops("1.5")).toBeNull();
   });
 });
 
@@ -115,8 +115,20 @@ describe("getClientIp", () => {
     else process.env.TRUSTED_PROXY_HOPS = ORIGINAL_ENV;
   });
 
-  it("uses the default hop count of 1 when TRUSTED_PROXY_HOPS is unset", () => {
+  it("fails SAFE to 'unknown' when TRUSTED_PROXY_HOPS is unset — no default, never trusts the header", () => {
     delete process.env.TRUSTED_PROXY_HOPS;
+    const h = new Headers({ "x-forwarded-for": "1.2.3.4, 203.0.113.5" });
+    expect(getClientIp(h)).toBe("unknown");
+  });
+
+  it("fails SAFE to 'unknown' when TRUSTED_PROXY_HOPS is garbage", () => {
+    process.env.TRUSTED_PROXY_HOPS = "not-a-number";
+    const h = new Headers({ "x-forwarded-for": "1.2.3.4, 203.0.113.5" });
+    expect(getClientIp(h)).toBe("unknown");
+  });
+
+  it("uses hop count 1 when TRUSTED_PROXY_HOPS=1 — takes the last entry", () => {
+    process.env.TRUSTED_PROXY_HOPS = "1";
     const h = new Headers({ "x-forwarded-for": "1.2.3.4, 203.0.113.5" });
     expect(getClientIp(h)).toBe("203.0.113.5");
   });
@@ -131,15 +143,15 @@ describe("getClientIp", () => {
   // — this is the exact regression fix 1.1 exists to prevent, made
   // permanent rather than a one-off manual observation against staging.
   it("a request with a bogus x-forwarded-for prepended resolves to the SAME client IP as the clean request", () => {
-    delete process.env.TRUSTED_PROXY_HOPS;
+    process.env.TRUSTED_PROXY_HOPS = "1";
     const clean = new Headers({ "x-forwarded-for": "203.0.113.5" });
     const withBogusPrefix = new Headers({ "x-forwarded-for": "1.2.3.4, 203.0.113.5" });
     expect(getClientIp(withBogusPrefix)).toBe(getClientIp(clean));
     expect(getClientIp(withBogusPrefix)).not.toBe("1.2.3.4"); // the attacker-supplied value must never win
   });
 
-  it("a spoofed prefix cannot mint a fresh bucket at the default hop count", () => {
-    delete process.env.TRUSTED_PROXY_HOPS;
+  it("a spoofed prefix cannot mint a fresh bucket at hop count 1", () => {
+    process.env.TRUSTED_PROXY_HOPS = "1";
     const real = new Headers({ "x-forwarded-for": "203.0.113.5" });
     const spoofed1 = new Headers({ "x-forwarded-for": "9.9.9.9, 203.0.113.5" });
     const spoofed2 = new Headers({ "x-forwarded-for": "8.8.8.8, 203.0.113.5" });
@@ -154,7 +166,7 @@ describe("getClientIp", () => {
   });
 
   it("never falls back to x-real-ip", () => {
-    delete process.env.TRUSTED_PROXY_HOPS;
+    process.env.TRUSTED_PROXY_HOPS = "1";
     const h = new Headers({ "x-real-ip": "203.0.113.9" });
     expect(getClientIp(h)).toBe("unknown");
   });

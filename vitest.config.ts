@@ -22,6 +22,12 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
     exclude: ["**/node_modules/**", "**/*.integration.test.ts"],
+    // TRUSTED_PROXY_HOPS has no default (security/rate-limit.ts). Pin it for
+    // the suite so getClientIp() behaves deterministically — a "single proxy
+    // in front" topology, matching what most route tests assume when they
+    // set an x-forwarded-for header. rate-limit.test.ts deletes it within
+    // specific test bodies to exercise the unset path.
+    env: { TRUSTED_PROXY_HOPS: "1" },
   },
   resolve: {
     alias: {

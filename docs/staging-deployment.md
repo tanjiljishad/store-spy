@@ -2,11 +2,15 @@
 
 Two host options are prepared, both consuming the **same** CI-built GHCR image:
 
-- **Render + Neon** — managed PaaS, `render.yaml`. Sections "Target
-  architecture" through "Post-deploy verification" below.
-- **Self-hosted VPS (Contabo)** — `docker compose` on a plain Linux box,
+- **Self-hosted VPS (Contabo) — the authoritative deploy path.** `docker
+  compose` on a plain Linux box, `docker-compose.prod.yml` +
   `deploy/contabo-deploy.sh`. See "Deploying to a self-hosted VPS (Contabo)"
-  below.
+  and "Host hardening" below.
+- **Render + Neon — fallback.** Managed PaaS, `render.yaml`, pulling the same
+  image. Sections "Target architecture" through "Post-deploy verification"
+  below. Kept working, but the Contabo path is what the deploy config,
+  `docker-compose.prod.yml` comments, and `src/lib/security/rate-limit.ts`'s
+  proxy-hop assumptions are written against.
 
 Originated in Milestone 8 Sub-phase B, updated in Sub-phase C, and again in B4
 (Dockerfile + `docker-compose.yml` + `/api/health` + `.github/workflows/ci.yml`
@@ -134,11 +138,93 @@ $EDITOR deploy/deploy.env                              # GHCR_USER, GHCR_TOKEN, 
 - **`IMAGE`** is `ghcr.io/<owner>/<repo>` with no tag, matching what CI pushes
   (`ghcr.io/${{ github.repository }}`). `IMAGE_TAG` defaults to `latest`.
 - The host still needs a normal `.env` (the base compose file's
-  `env_file: .env`). If you use managed Postgres instead of the in-stack one,
-  see the comment block at the bottom of `docker-compose.prod.yml`.
-- Put a TLS-terminating reverse proxy (Caddy / nginx / Traefik) in front of
-  `WEB_PORT`; only the web service needs to be reachable, and the worker has no
-  HTTP surface at all.
+  `env_file: .env`) — see "Environment variable checklist" below for every
+  variable it must contain. `.env` must also set **`POSTGRES_PASSWORD`** (no
+  default; `docker compose` and the deploy script both abort without it) and,
+  for the web service, **`TRUSTED_PROXY_HOPS`** (no default; the web container
+  refuses to boot without it — see "Host hardening"). If you use managed
+  Postgres instead of the in-stack one, see the comment block at the bottom of
+  `docker-compose.prod.yml`.
+- A TLS-terminating reverse proxy (Caddy / nginx) in front of the web
+  container is **mandatory**, not optional, and it must be configured
+  precisely — see "Host hardening" immediately below. The worker has no HTTP
+  surface at all.
+
+### Host hardening
+
+`docker-compose.prod.yml` publishes **no** host port for Postgres, and the web
+container's port is bound to `127.0.0.1` only. Nothing in the stack is reachable
+from outside the host except through the reverse proxy you put in front of it.
+The three things below are load-bearing; a deploy that skips any of them is not
+safe to expose.
+
+**1. Host firewall.** Allow inbound `22` (SSH), `80`, and `443` only. Note that
+Docker inserts its own `iptables` rules that **bypass `ufw`** — publishing a
+container port to `0.0.0.0` would be reachable from the internet even with `ufw`
+"deny incoming". The compose files already avoid that (loopback binds +
+`ports: !reset []` for Postgres), so with a normal host firewall the only
+externally reachable thing is your proxy. Do **not** add `-p 0.0.0.0:...`
+mappings or a `DOCKER-USER` allow rule that re-exposes them.
+
+**2. `TRUSTED_PROXY_HOPS`.** Set it in `.env` for the web service. It has **no
+default** — the web container throws at startup (`src/instrumentation.ts`) if it
+is unset or invalid, because a wrong value silently re-opens `x-forwarded-for`
+spoofing for every IP-keyed rate limit (signup, login throttle, `/api/analyze`,
+the anonymous quota). For the topology here — exactly one reverse proxy
+(Caddy/nginx) directly in front of the web container — the value is **`1`**. Add
+a CDN in front of that proxy and it becomes `2`. See
+`docs/environment-variables.md` and `src/lib/security/rate-limit.ts`.
+
+**3. Reverse proxy config.** The proxy must (a) set `X-Forwarded-For` so the
+one appended entry is the real client (which is what `TRUSTED_PROXY_HOPS=1`
+then trusts), and (b) refuse `/api/internal/*` from the public — those routes
+(`/api/internal/entitlements`, `/api/internal/scheduler/*`,
+`/api/internal/debug/*`) are secret-gated and fail closed, but they are for
+in-host / operator use only and have no reason to be internet-reachable.
+
+Caddy (`/etc/caddy/Caddyfile`):
+
+```
+app.example.com {
+    # Block operator-only routes outright (404, no hint they exist).
+    @internal path /api/internal/*
+    respond @internal 404
+
+    # Caddy sets X-Forwarded-For to the immediate client and appends to any
+    # existing value by default, so the rightmost entry is the real client —
+    # exactly what TRUSTED_PROXY_HOPS=1 reads. Do not add trusted_proxies /
+    # X-Forwarded-For rewrites that would change that.
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+nginx (`server` block):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name app.example.com;
+    # ... ssl_certificate / ssl_certificate_key ...
+
+    # Operator-only routes: not reachable from the internet.
+    location /api/internal/ { return 404; }
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        # $proxy_add_x_forwarded_for = "<existing XFF>, <nginx's $remote_addr>".
+        # With one nginx hop, the rightmost entry is the real client, which is
+        # what TRUSTED_PROXY_HOPS=1 trusts. Do NOT use a bare
+        # "proxy_set_header X-Forwarded-For $remote_addr" or trust a
+        # client-sent X-Real-IP.
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+    }
+}
+```
+
+If you front the proxy with Cloudflare or another CDN (so there are two hops),
+set `TRUSTED_PROXY_HOPS=2` and make sure both hops append rather than rewrite
+`X-Forwarded-For`.
 
 ### Deploy / redeploy / roll back
 
@@ -300,24 +386,43 @@ polluted database *before* step 2, if they were only partially created).
 Never run `prisma migrate reset` against a database with real data — it drops
 and recreates everything.
 
-## Environment variable checklist (staging values)
+## Environment variable checklist
 
-See `docs/environment-variables.md` for the full reference (what each
-variable protects, generation method). Staging-specific notes only:
+`docs/environment-variables.md` is the full reference — what each variable
+protects, how to generate a value, and the authoritative per-process matrix.
+This is the deploy-time checklist: **every** variable the code reads, whether
+it is required, and where it goes. On Contabo these all live in the host's
+`.env` (plus `POSTGRES_PASSWORD`); on Render they are per-service dashboard
+values (`render.yaml` carries none — every entry is `sync: false`).
 
-| Variable | Web service | Worker service | Staging value source |
-|---|---|---|---|
-| `DATABASE_URL` | Required | Required | Neon staging project's **pooled** connection string, with `?options=-c%20search_path%3Dstore_spy%2Cpublic` appended and no `?schema=` — see "Database migrations" above; the web service refuses to start if this is wrong |
-| `AUTH_SECRET` | Required | **Not needed** — verified in Sub-phase C that the worker's import chain never touches `next-auth`/`@auth/core`, and a real worker run with `AUTH_SECRET` unset completed a full cycle with no error | Freshly generated, staging-only |
-| `AUTH_TRUST_HOST` | **Required** — see the critical-fix note above; without it every Auth.js endpoint fails closed | Not needed (same reasoning as `AUTH_SECRET`) | `"true"` |
-| `SCHEDULER_SECRET` | Required if the HTTP scheduler routes will be manually triggered | Not needed (worker calls scheduler functions directly) | Freshly generated, staging-only, if used |
-| `SERPAPI_API_KEY` | Not read by the web process | Optional — only if marketing-tick verification against staging is desired | A separate, low-tier key from any production key |
-| `GOOGLE_CLIENT_ID` / `_SECRET` | Optional | Not read by the worker | Staging-registered OAuth app, staging callback URL |
-| `FACEBOOK_CLIENT_ID` / `_SECRET` | Optional | Not read by the worker | Same as Google |
-| `NODE_ENV` | Set automatically (`render.yaml`) | Set automatically (`render.yaml`) | `production` (Render's own convention for any non-local deploy, staging included — there is no separate "staging" NODE_ENV value in this codebase) |
+"Fail-closed" below means the feature refuses to operate when the variable is
+unset — it never silently degrades to an unprotected state. "Boot-fails" means
+the **web container will not start** without it.
 
-Never commit any of the real values above. `render.yaml` intentionally
-contains no secrets — every entry is `sync: false`.
+| Variable | Web | Worker | Required? | Notes |
+|---|---|---|---|---|
+| `DATABASE_URL` | ✅ | ✅ | **Yes** | Managed-Postgres (or in-stack) connection string with `?options=-c%20search_path%3Dstore_spy%2Cpublic` and **no** `?schema=`. Web **boot-fails** on a wrong `search_path` (`src/instrumentation.ts`). |
+| `POSTGRES_PASSWORD` | — | — | **Yes, if using the in-stack Postgres** (Contabo default) | Compose-only — the in-stack DB password and the password in the compose `DATABASE_URL`. **No default**; `docker compose` and `deploy/contabo-deploy.sh` both abort if unset. `openssl rand -base64 24`. Not needed on Render (managed DB). |
+| `TRUSTED_PROXY_HOPS` | ✅ | — | **Yes** | **No default; web boot-fails without it.** Number of trusted reverse-proxy hops. `1` for the Contabo topology (one Caddy/nginx), `2` with a CDN in front, `0` only if nothing proxies the process. See "Host hardening". |
+| `AUTH_SECRET` | ✅ | — | **Yes** | `openssl rand -base64 32`, unique per environment. Worker's import chain never touches Auth.js — verified unset-safe there. |
+| `AUTH_TRUST_HOST` | ✅ | — | **Yes** (non-Vercel host) | `"true"`. Without it every Auth.js endpoint fails closed with `UntrustedHost`. |
+| `CONTROL_PLANE_INTERNAL_SECRET` | ✅ | — | **Yes** | Gates `GET /api/internal/entitlements` (constant-time compare). **Fail-closed** (503) if unset. `openssl rand -base64 32`. |
+| `SCHEDULER_SECRET` | ✅ | — | **Yes** in practice | Gates `POST /api/internal/scheduler/{tick,marketing-tick}` and `/api/internal/debug/headers`. **Fail-closed** (503 / 404) if unset. The worker ticks in-process and does not need it, but any operator/monitor trigger does. `openssl rand -base64 32`. |
+| `TURNSTILE_SECRET_KEY` | ✅ | — | **Yes** (for anonymous analysis) | Server-side Turnstile verification for anonymous `POST /api/analyze`. **Fail-closed**: unset ⇒ every anonymous request rejected (never skipped). |
+| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | ✅ (build-time) | — | **Yes** (for anonymous analysis) | Public site key, same Turnstile site as the secret. Inlined at image-build time — must be present when CI builds the image, not just at runtime. Unset ⇒ the widget doesn't render and anonymous analysis is unusable (server check still fails closed). |
+| `EMAIL_VERIFICATION_TOKEN_SECRET` | ✅ | — | **Yes** | Signs `GET /verify-email` links. **Fail-closed**: unset ⇒ no verification link can be minted **and** none verifies, so every account is stuck at `/verify-email`. `openssl rand -base64 32`, dedicated (never reuse `AUTH_SECRET`). |
+| `UNSUBSCRIBE_TOKEN_SECRET` | ✅ | — | **Yes** | Signs `GET /unsubscribe` links. **Fail-closed**. `openssl rand -base64 32`, dedicated. |
+| `RESEND_API_KEY` | ✅ | — | **Yes** (for any outbound email) | Resend API key. Without it (or `EMAIL_FROM`) email never sends — signup/resend catch it (non-fatal / 502), so no crash, but verification email is dead. |
+| `EMAIL_FROM` | ✅ | — | **Yes** (alongside `RESEND_API_KEY`) | Verified sending-domain address. An unverified From domain gets every send rejected by Resend. |
+| `ANONYMOUS_CRAWL_HOURLY_CEILING` | ✅ | — | Optional (default 500) | Global circuit breaker for anonymous analysis across all IPs/hour. Tune under real traffic. |
+| `SERPAPI_API_KEY` | — | ✅ | Optional (required for marketing collection) | Read only by the worker. Without it the marketing tick logs `SERPAPI_API_KEY is not configured` each cycle and every other feature is unaffected. Billed — use a separate low-tier key from production. |
+| `GOOGLE_CLIENT_ID` / `_SECRET` | ✅ | — | Optional | Google sign-in button; absent ⇒ button not rendered. Needs a real OAuth app with this host's callback URL. |
+| `FACEBOOK_CLIENT_ID` / `_SECRET` | ✅ | — | Optional | Same as Google. |
+| `NODE_ENV` | ✅ | ✅ | Platform-managed | `production` on any non-local deploy. Set by the image / `render.yaml`. |
+| Marketing pixel / conversion vars (`NEXT_PUBLIC_*_PIXEL_*`, `*_CONVERSIONS_API_ACCESS_TOKEN`, `GOOGLE_MEASUREMENT_PROTOCOL_API_SECRET`, `X_PIXEL_ID`) | ✅ (client IDs, build-time) / worker (server tokens) | | Optional, **off by default** | Leave unset. The server-side conversion tokens are a PROVIDER SEAM — Milestone 12 §4.3 (credential vault) hasn't shipped, so a real value has nowhere safe to live. Full per-var detail in `docs/environment-variables.md`. |
+
+Never commit any real value. On Contabo, `.env` and `deploy/deploy.env` are
+gitignored; on Render every `render.yaml` entry is `sync: false`.
 
 ## What Sub-phase C already verified locally (real infra, not just tests)
 

@@ -73,15 +73,22 @@ export function _resetRateLimitState(): void {
  * the number of proxies you know are really there — never the first entry,
  * which is attacker-controlled input, not a proxy observation.
  *
- * Default 1: Render (this app's deployment target, see render.yaml) puts
- * exactly one reverse proxy in front of the web service. `0` means "no
- * proxy at all" — see getClientIp's own comment for why that mode still
- * can't fall back to a real socket address in this framework.
+ * Returns `null` (NOT a default) when unset, empty, or invalid. There is
+ * deliberately no default: a wrong hop count for the real deployed topology
+ * silently re-opens the x-forwarded-for spoofing hole every IP-keyed limit
+ * exists to close. Production refuses to boot with this unset
+ * (src/instrumentation.ts); getClientIp() fails SAFE (one shared "unknown"
+ * bucket) if execution reaches it anyway. Set it explicitly per deployment:
+ * `1` for a single Caddy/nginx in front (the Contabo topology — see
+ * docs/staging-deployment.md), `2` if a CDN sits in front of that, `0` to
+ * ignore x-forwarded-for entirely (only correct when nothing proxies this
+ * process — see getClientIp's own comment for why `0` still can't fall back
+ * to a real socket address in this framework).
  */
-export function parseTrustedProxyHops(raw: string | undefined): number {
-  if (raw === undefined || raw === "") return 1;
+export function parseTrustedProxyHops(raw: string | undefined): number | null {
+  if (raw === undefined || raw === "") return null;
   const n = Number(raw);
-  return Number.isInteger(n) && n >= 0 ? n : 1;
+  return Number.isInteger(n) && n >= 0 ? n : null;
 }
 
 /**
@@ -118,8 +125,9 @@ export function extractClientIp(forwardedFor: string | null, trustedProxyHops: n
  *
  * `x-real-ip` is deliberately never consulted: it is exactly as spoofable
  * as the first entry of `x-forwarded-for` unless your own proxy is known to
- * set it, and this app's one supported proxy (Render) doesn't — trusting it
- * would just reopen the same hole this function exists to close.
+ * set it, and the reverse proxy this app is deployed behind (Caddy/nginx on
+ * the Contabo VPS — see docs/staging-deployment.md) isn't configured to —
+ * trusting it would just reopen the same hole this function exists to close.
  *
  * Still only a rate-limit key, never an access-control decision: worst case
  * for a successful spoof is the spoofer sharing a bucket with themselves,
@@ -127,5 +135,14 @@ export function extractClientIp(forwardedFor: string | null, trustedProxyHops: n
  */
 export function getClientIp(headers: Headers): string {
   const hops = parseTrustedProxyHops(process.env.TRUSTED_PROXY_HOPS);
+  if (hops === null) {
+    // TRUSTED_PROXY_HOPS is unset or invalid and there is no default (see
+    // parseTrustedProxyHops). Production refuses to boot in this state
+    // (src/instrumentation.ts); if a dev/test process — or a boot check that
+    // was somehow bypassed — still reaches here, fail SAFE: collapse every
+    // caller into one shared bucket rather than trust a client-controlled
+    // x-forwarded-for entry.
+    return "unknown";
+  }
   return extractClientIp(headers.get("x-forwarded-for"), hops);
 }

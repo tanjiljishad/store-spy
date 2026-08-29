@@ -31,7 +31,9 @@ services:
     # drifted to 5432 once; the preflight in the setup file now fails the run
     # loudly if the live DATABASE_URL doesn't match.
     ports:
-      - "5433:5432"
+      # Loopback only — the integration suite connects via localhost:5433; this
+      # disposable DB has no reason to be reachable on any other host interface.
+      - "127.0.0.1:5433:5432"
     tmpfs:
       - /var/lib/postgresql/data
     command: >

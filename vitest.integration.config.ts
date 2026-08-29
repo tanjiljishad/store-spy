@@ -33,6 +33,11 @@ export default defineConfig({
     fileParallelism: false,
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    // TRUSTED_PROXY_HOPS has no default (security/rate-limit.ts) and
+    // production refuses to boot without it. Pin it here so route
+    // integration tests that key rate limits on an x-forwarded-for header
+    // see the "single proxy in front" behaviour they were written against.
+    env: { TRUSTED_PROXY_HOPS: "1" },
   },
   resolve: {
     alias: {

@@ -14,6 +14,26 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
+  // TRUSTED_PROXY_HOPS has no default (see security/rate-limit.ts): a wrong
+  // hop count for the real proxy topology makes every IP-keyed rate limit
+  // (signup, login throttle, /api/analyze, the anonymous quota) spoofable
+  // via a forged x-forwarded-for prefix. Every real deployment MUST set it
+  // explicitly. Enforced only when actually serving in production — never
+  // during `next build` (NEXT_PHASE === "phase-production-build"), which has
+  // no proxy topology to know and no traffic to protect.
+  if (process.env.NODE_ENV === "production" && process.env.NEXT_PHASE !== "phase-production-build") {
+    const { parseTrustedProxyHops } = await import("./lib/security/rate-limit");
+    if (parseTrustedProxyHops(process.env.TRUSTED_PROXY_HOPS) === null) {
+      throw new Error(
+        "[startup] Refusing to start — TRUSTED_PROXY_HOPS is unset or invalid. Set it to the " +
+          "number of trusted reverse-proxy hops in front of this process: 1 for a single " +
+          "Caddy/nginx (the Contabo topology), 2 if a CDN sits in front of that, or 0 to ignore " +
+          "x-forwarded-for entirely (only if nothing proxies this process). See " +
+          "docs/environment-variables.md and docs/staging-deployment.md.",
+      );
+    }
+  }
+
   const { schemaParamProblem, liveSearchPathProblem } = await import("./lib/db/search-path");
 
   // 1. String-level: the `?schema=` footgun. No database needed — always fatal.

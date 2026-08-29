@@ -15,15 +15,26 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: app
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      # No default: `${VAR:?msg}` makes `docker compose` abort loudly if it is
+      # unset or empty, rather than silently booting Postgres with a guessable
+      # password. Set it in `.env` (compose reads that for interpolation) — see
+      # .env.example. In production the port below is not published at all
+      # (docker-compose.prod.yml), but a weak DB password is still a weak DB
+      # password on the compose network.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env / .env.example) — there is no default}
       POSTGRES_DB: store_spy
       # Event headlines contain → and — (significance.ts / engine.ts). Pin the
       # cluster encoding rather than trusting the host locale — same reason as
       # docker-compose.test.yml.
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
     ports:
-      # 5432 — no clash with docker-compose.test.yml's 5433.
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Bound to loopback only: `web`/`worker` reach Postgres by service name on
+      # the compose network and never need a published host port. 127.0.0.1 keeps
+      # a local `psql`/GUI working without exposing the DB on every host
+      # interface (Docker's own iptables rules bypass ufw). Production drops this
+      # mapping entirely — see docker-compose.prod.yml. 5432 — no clash with
+      # docker-compose.test.yml's 5433.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -43,9 +54,13 @@ services:
       # Override the .env DATABASE_URL to reach the compose Postgres by service
       # name. The search_path form is mandatory (app tables live in store_spy);
       # `?schema=` must NOT be present — see docs/environment-variables.md.
-      DATABASE_URL: "postgresql://app:${POSTGRES_PASSWORD:-app}@postgres:5432/store_spy?options=-c%20search_path%3Dstore_spy%2Cpublic"
+      # POSTGRES_PASSWORD has no default (see the postgres service above).
+      DATABASE_URL: "postgresql://app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set — no default}@postgres:5432/store_spy?options=-c%20search_path%3Dstore_spy%2Cpublic"
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      # Loopback only: the reverse proxy (Caddy/nginx) runs on the host and
+      # connects via 127.0.0.1; the web port must never be published on a public
+      # interface. Production keeps this exact binding — see docker-compose.prod.yml.
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
     healthcheck:
       # Node 22 has a global fetch; the runner image has no curl/wget. The
       # entrypoint runs `migrate deploy` before `node server.js`, so once this
@@ -64,7 +79,7 @@ services:
         condition: service_healthy # web's health = server up AND migrations applied
     env_file: .env
     environment:
-      DATABASE_URL: "postgresql://app:${POSTGRES_PASSWORD:-app}@postgres:5432/store_spy?options=-c%20search_path%3Dstore_spy%2Cpublic"
+      DATABASE_URL: "postgresql://app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set — no default}@postgres:5432/store_spy?options=-c%20search_path%3Dstore_spy%2Cpublic"
 
 volumes:
   pgdata:

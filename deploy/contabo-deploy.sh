@@ -31,6 +31,12 @@ fi
 : "${GHCR_USER:?set GHCR_USER (in $ENV_FILE or the environment)}"
 : "${GHCR_TOKEN:?set GHCR_TOKEN — a GitHub PAT with read:packages}"
 : "${IMAGE:?set IMAGE, e.g. ghcr.io/owner/repo (no tag)}"
+# The in-stack Postgres password has no default (docker-compose.yml uses
+# ${POSTGRES_PASSWORD:?...}). Fail here with a clear message rather than letting
+# `docker compose` abort mid-deploy. If you point DATABASE_URL at managed
+# Postgres instead (see docker-compose.prod.yml), set this to any non-empty
+# placeholder — compose still interpolates it even for the unused service.
+: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in $ENV_FILE — the in-stack Postgres password, no default}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 KEEP_IMAGES="${KEEP_IMAGES:-3}"
 WEB_PORT="${WEB_PORT:-3000}"
