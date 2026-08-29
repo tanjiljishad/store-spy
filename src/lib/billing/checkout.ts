@@ -107,9 +107,9 @@ export async function processCheckout(prisma: PrismaClient, req: CheckoutRequest
         data: { userId: req.userId, plan, source: "PROMO", status: "ACTIVE", expiresAt },
       });
 
-      // B2 step 2·A dual-write: mirror the plan into the control plane. Same
-      // expiry the store_spy.Subscription just got. `verify:b2-step1` is the
-      // gate that this stays in sync — see docs/store-spy-control-plane-b2.md.
+      // The plan lives only in the control plane — rebuild this account's
+      // store-spy subscriptions + entitlements to match, with the same expiry
+      // the store_spy.Subscription just got.
       await syncControlPlanePlan(tx, { userId: req.userId, plan, trialEndsAt: null, paidPeriodEnd: expiresAt });
 
       await recordAdminAction(tx, {

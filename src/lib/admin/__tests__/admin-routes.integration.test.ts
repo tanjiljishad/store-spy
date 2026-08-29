@@ -44,7 +44,7 @@ const prisma = new PrismaClient();
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AdminAuditLog","AnalysisUsage","Watchlist","Session","Account","User","Store" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AdminAuditLog","AnalysisUsage","Watchlist","Session","Account","Store" RESTART IDENTITY CASCADE`,
   );
   _resetRateLimitState();
   await resetControlPlane(prisma);

@@ -30,7 +30,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AnalysisUsage","Event","ProductStateSnapshot","AdObservation","MarketingCollectionRun","Product","StoreEntity","Crawl","StoreStats","Watchlist","User","Store" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AnalysisUsage","Event","ProductStateSnapshot","AdObservation","MarketingCollectionRun","Product","StoreEntity","Crawl","StoreStats","Watchlist","Store" RESTART IDENTITY CASCADE`,
   );
   await resetControlPlane(prisma);
 });

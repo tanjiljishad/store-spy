@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "AdminPermissionGrant","AdminAuditLog","Session","Account","User" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "AdminPermissionGrant","AdminAuditLog","Session","Account" RESTART IDENTITY CASCADE`);
   _resetRateLimitState();
   await resetControlPlane(prisma);
 });

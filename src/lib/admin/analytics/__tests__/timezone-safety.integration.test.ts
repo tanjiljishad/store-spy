@@ -50,7 +50,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AnonymousAnalysis","Subscription","Watchlist","AnalysisUsage","Session","Account","Store","User" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AnonymousAnalysis","Subscription","Watchlist","AnalysisUsage","Session","Account","Store" RESTART IDENTITY CASCADE`,
   );
   await prisma.$executeRawUnsafe(`SET TIME ZONE '${PATHOLOGICAL_TZ}'`);
   await resetControlPlane(prisma);

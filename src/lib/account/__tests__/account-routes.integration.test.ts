@@ -37,7 +37,7 @@ const prisma = new PrismaClient();
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AdminAuditLog","Checkout","Subscription","AnalysisUsage","Watchlist","Session","Account","Store","User" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AdminAuditLog","Checkout","Subscription","AnalysisUsage","Watchlist","Session","Account","Store" RESTART IDENTITY CASCADE`,
   );
   _resetRateLimitState();
   vi.mocked(getCurrentUser).mockReset();

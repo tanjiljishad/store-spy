@@ -71,13 +71,6 @@ export async function makeStoreSpyUser(
 }
 
 /**
- * TRUNCATE the control-plane tables + the two step-1 store_spy tables. Call
- * from `beforeEach` alongside the suite's existing `TRUNCATE "User" ...` —
- * `control_plane.*` has no FK to `store_spy.User`, and `UserAdminRole` /
- * `MarketingConsent` have none until migration 20260828180000, so a plain
- * `TRUNCATE "User" CASCADE` does not reach them.
- */
-/**
  * Set a FREE user's monitoring-trial end to `at` (past OR future) by writing
  * the `subt_` TRIALING subscription's `period_end` — the single source of
  * truth the gate (resolveEntitlement) and the per-watch expiry ceiling
@@ -89,10 +82,11 @@ export async function setTrialWindow(prisma: PrismaClient, userId: string, at: D
 
 /**
  * TRUNCATE the control-plane tables + the two companion `store_spy` tables. Call
- * from `beforeEach`. `control_plane.accounts CASCADE` reaches users /
- * subscriptions / entitlements and, through the migration-20260828180000 FKs,
- * the store_spy children too — but TRUNCATE ... CASCADE only follows FKs, and
- * a suite that also truncates `"User"` etc. by name still needs those listed.
+ * from `beforeEach`. Truncating `control_plane."accounts"` CASCADEs to users /
+ * subscriptions / entitlements and, through the migration-20260828180000 FKs
+ * (ON DELETE CASCADE, but not ON TRUNCATE — hence the explicit list), does not
+ * itself clear the store_spy children; a suite still names `Watchlist`,
+ * `AnalysisUsage`, `Session`, `Account`, etc. in its own TRUNCATE.
  */
 export async function resetControlPlane(prisma: PrismaClient): Promise<void> {
   await prisma.$executeRawUnsafe(

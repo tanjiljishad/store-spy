@@ -4,55 +4,68 @@ import { USER_EXPORT_SELECT_FIELDS, csvEscape, toCsv, type UserExportRow } from 
 
 /**
  * Milestone 12 Section 3.3: "Assert this in a test that fails if a new
- * sensitive User column is ever added without being excluded." Reads the
- * User model straight from Prisma's DMMF (no DB connection needed — this
- * is schema metadata baked into the generated client) rather than
- * hand-copying schema.prisma's field list, so it can't silently drift out
- * of date with the schema. Every field must be explicitly categorized: in
- * the export allowlist, or in REVIEWED_NON_EXPORTED_FIELDS below with a
- * human having looked at it and confirmed it isn't a secret. A brand-new
- * column lands in NEITHER set and fails this test until someone decides.
+ * sensitive user column is ever added without being excluded." Reads the models
+ * straight from Prisma's DMMF (no DB connection — schema metadata baked into the
+ * generated client) rather than hand-copying schema.prisma's field list, so it
+ * can't silently drift. Every column must be explicitly categorized: exported,
+ * or in REVIEWED_NON_EXPORTED_COLUMNS below with a human having confirmed it
+ * isn't a secret. A brand-new column lands in NEITHER set and fails this test.
+ *
+ * B2 2·B step 4: `store_spy.User` is gone. User-identity data spans three Prisma
+ * models — `CpUser` + `UserAdminRole` + `MarketingConsent`. This walks all three.
  */
-const REVIEWED_NON_EXPORTED_FIELDS = new Set<string>([
+const IDENTITY_MODELS = ["CpUser", "UserAdminRole", "MarketingConsent"] as const;
+
+/** Columns this support CSV actually emits (`plan` is a subscription join, not an identity column). */
+const EXPORTED_COLUMNS = new Set<string>([
+  "id",
+  "email",
+  "createdAt",
+  "role", // UserAdminRole.role -> the CSV's `role` column
+]);
+
+const REVIEWED_NON_EXPORTED_COLUMNS = new Set<string>([
   "passwordHash", // the actual secret this test exists to catch
-  "emailVerified",
+  "emailVerifiedAt",
   "name",
   "image",
   "sessionsValidAfter", // internal JWT-kill-switch bookkeeping, not a credential
-  "freeTrialEndsAt",
   "updatedAt",
-  // Milestone 12 §4.1: not a secret, but out of scope for a SUPPORT export
-  // specifically — this CSV's `purpose:"support"` path never needs consent
-  // status to answer a support ticket. The MARKETING export path (same
-  // route, different purpose) filters ON marketingConsent at the query
-  // level (see exportUsers()'s marketingConsentOnly option) without ever
-  // adding the raw field to the output columns — reviewed and intentional,
-  // not an oversight.
-  "marketingConsent",
-  "marketingConsentAt",
-  "marketingConsentSource",
-  // Same reasoning as the marketingConsent fields above — a support lookup
-  // never needs to know when ToS was accepted; not sensitive, just out of
-  // this CSV's scope.
+  "accountId", // internal control_plane FK
+  "accountRole", // billing OWNER/MEMBER role, not the admin role
+  "userId", // companion-table PK, == id
+  // Milestone 12 §4.1: not a secret, but out of scope for a SUPPORT export.
+  // The MARKETING export path (same route, different purpose) filters ON
+  // consent at the query level (exportUsers()'s marketingConsentOnly) without
+  // ever adding the raw column to the output — reviewed and intentional.
+  "consent",
+  "consentAt",
+  "consentSource",
+  // a support lookup never needs to know when ToS was accepted
   "tosAcceptedAt",
-  // relations — never joined into a bulk user export
-  "accounts",
-  "sessions",
-  "watchlists",
-  "analysisUsage",
-  "permissionGrants",
 ]);
 
+function identityScalarColumns(): string[] {
+  const names = new Set<string>();
+  for (const modelName of IDENTITY_MODELS) {
+    const model = Prisma.dmmf.datamodel.models.find((m) => m.name === modelName);
+    expect(model, `${modelName} not found in Prisma DMMF — has it been renamed?`).toBeTruthy();
+    for (const f of model!.fields) {
+      if (f.kind !== "object") names.add(f.name);
+    }
+  }
+  return [...names];
+}
+
 describe("User export field allowlist", () => {
-  it("every field on the Prisma User model is either exported or explicitly reviewed as safe to omit", () => {
-    const userModel = Prisma.dmmf.datamodel.models.find((m) => m.name === "User");
-    expect(userModel, "User model not found in Prisma DMMF — has it been renamed?").toBeTruthy();
-
-    const uncategorized = userModel!.fields
-      .map((f) => f.name)
-      .filter((name) => !(USER_EXPORT_SELECT_FIELDS as readonly string[]).includes(name) && !REVIEWED_NON_EXPORTED_FIELDS.has(name));
-
-    expect(uncategorized, "a User field exists that is neither exported nor reviewed — categorize it in user-export.ts or this test before merging").toEqual([]);
+  it("every user-identity column (CpUser + UserAdminRole + MarketingConsent) is either exported or explicitly reviewed", () => {
+    const uncategorized = identityScalarColumns().filter(
+      (name) => !EXPORTED_COLUMNS.has(name) && !REVIEWED_NON_EXPORTED_COLUMNS.has(name),
+    );
+    expect(
+      uncategorized,
+      "a user-identity column is neither exported nor reviewed — categorize it in user-export.ts or this test before merging",
+    ).toEqual([]);
   });
 
   it("never exports passwordHash", () => {

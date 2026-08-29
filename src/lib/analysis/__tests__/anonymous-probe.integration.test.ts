@@ -15,7 +15,7 @@ if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with
 const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
 beforeEach(async () =>
-  prisma.$executeRawUnsafe(`TRUNCATE "AnonymousAnalysis","AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","User","Store" RESTART IDENTITY CASCADE`),
+  prisma.$executeRawUnsafe(`TRUNCATE "AnonymousAnalysis","AnalysisUsage","Watchlist","Session","Account","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","Store" RESTART IDENTITY CASCADE`),
 );
 
 const SAFE_DNS = async () => [{ address: "8.8.8.8" }];

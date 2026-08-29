@@ -142,7 +142,10 @@ export async function listPromos(prisma: PrismaClient, opts: { cursor?: string |
       code: p.code,
       discountType: p.discountType,
       discountValue: p.discountValue,
-      appliesToPlan: p.appliesToPlan,
+      // B2 2·B step 4: PromoCode.appliesToPlan is a plain string column now
+      // (the store_spy.PlanTier enum was dropped). Only ever written a valid
+      // tier via the create route's own VALID_PLANS check.
+      appliesToPlan: p.appliesToPlan as PlanTier | null,
       maxRedemptions: p.maxRedemptions,
       perUserLimit: p.perUserLimit,
       validFrom: p.validFrom.toISOString(),

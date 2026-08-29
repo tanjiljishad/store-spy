@@ -6,8 +6,8 @@ import { getPlanLimits } from "./plan-limits";
  * 2·B: NOT an access-control boundary any more — every gate calls
  * `resolveEntitlement()` per feature against the control plane. These feed
  * the upgrade-prompt copy (UpgradePrompt.tsx), the FREE downgrade-cascade
- * limit (subscription-sweep.ts), the FREE-watch duration ceiling (watch.ts),
- * and plan-parity.ts's cross-check.
+ * limit (subscription-sweep.ts), and the FREE-watch duration ceiling
+ * (watch.ts).
  */
 export type BooleanCapability = "ADVANCED_INTELLIGENCE";
 

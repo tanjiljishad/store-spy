@@ -25,7 +25,7 @@ afterAll(async () => prisma.$disconnect());
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AdminAuditLog","Watchlist","Subscription","Store","User" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AdminAuditLog","Watchlist","Subscription","Store" RESTART IDENTITY CASCADE`,
   );
   await resetControlPlane(prisma);
 });

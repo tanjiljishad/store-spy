@@ -46,7 +46,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AnalysisUsage","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","Watchlist","Session","Account","User","Store" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "AnalysisUsage","Event","ProductStateSnapshot","Product","StoreEntity","Crawl","StoreStats","Watchlist","Session","Account","Store" RESTART IDENTITY CASCADE`,
   );
   _resetRateLimitState();
   vi.mocked(getCurrentUser).mockReset();

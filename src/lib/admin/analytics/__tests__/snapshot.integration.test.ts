@@ -10,7 +10,7 @@ const prisma = new PrismaClient();
 afterAll(async () => prisma.$disconnect());
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "MetricSnapshot","AnonymousAnalysis","Subscription","Watchlist","AnalysisUsage","MarketingCollectionRun","Crawl","PromoRedemption","PromoCode","Session","Account","Store","User" RESTART IDENTITY CASCADE`,
+    `TRUNCATE "MetricSnapshot","AnonymousAnalysis","Subscription","Watchlist","AnalysisUsage","MarketingCollectionRun","Crawl","PromoRedemption","PromoCode","Session","Account","Store" RESTART IDENTITY CASCADE`,
   );
   await resetControlPlane(prisma);
 });

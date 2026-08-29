@@ -92,11 +92,11 @@ async function expireOneSubscription(prisma: PrismaClient, subscriptionId: strin
 
     await tx.subscription.update({ where: { id: subscriptionId }, data: { status: "EXPIRED" } });
 
-    // B2 2·B commit 3b: plan lives in the control plane only. Rebuild the
-    // account's FREE subscriptions; the returning FREE user's monitoring-trial
-    // window is whatever it always was — resolveTrialEnd() (createdAt + 30d for
-    // an account that had no trial subscription, i.e. this one), usually
-    // already past. `verify:b2-step1` gates that this agrees with plan-limits.ts.
+    // B2 2·B: plan lives in the control plane only. Rebuild the account's FREE
+    // subscriptions; the returning FREE user's monitoring-trial window is
+    // whatever it always was — resolveTrialEnd() (createdAt + 30d for an
+    // account that had no trial subscription, i.e. this one), usually already
+    // past.
     await syncControlPlanePlan(tx, {
       userId: current.userId,
       plan: "FREE",

@@ -22,7 +22,7 @@ async function main() {
     process.exit(1);
   }
 
-  const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+  const existing = await prisma.cpUser.findUnique({ where: { email }, select: { id: true } });
   if (!existing) {
     console.error(`No user with email "${email}"`);
     process.exit(1);

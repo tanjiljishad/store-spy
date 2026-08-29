@@ -32,7 +32,7 @@ if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with
 const prisma = new PrismaClient();
 
 beforeEach(async () => {
-  await prisma.$executeRawUnsafe(`TRUNCATE "Session","Account","User" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "Session","Account" RESTART IDENTITY CASCADE`);
   _resetRateLimitState();
   vi.mocked(getCurrentUser).mockReset();
   vi.mocked(sendVerificationEmail).mockReset();

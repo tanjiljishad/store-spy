@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { ANONYMOUS_ANALYSES_PER_24H, getPlanLimits, isUnderLimit } from "../plan-limits";
+import { ANONYMOUS_ANALYSES_PER_24H, getPlanLimits, isUnderLimit, type PlanTier } from "../plan-limits";
 import { hasCapability, maxActiveMonitoredStores, maxAnalysesPer24h, monitoringDurationDays } from "../entitlement-service";
+import { PLAN_ENTITLEMENTS } from "../../control-plane/provision";
 
 /**
  * The coarse display/cascade tier matrix (plan-limits.ts). B2 2·B: the
- * AUTHORITATIVE quotas live in the control plane; plan-parity.ts asserts
- * these numbers agree with the control-plane seed. This pins the mirror.
+ * AUTHORITATIVE quotas live in the control plane; the last `describe` block
+ * here asserts this mirror agrees cell-for-cell with `PLAN_ENTITLEMENTS`
+ * (control-plane/provision.ts — what actually gets seeded into
+ * control_plane.entitlements). That check replaced the runtime `verify:b2-step1`
+ * gate when store_spy.User was dropped in step 4.
  */
 describe("plan-limits — display/cascade tier matrix, every cell", () => {
   it("FREE", () => {
@@ -63,6 +67,17 @@ describe("entitlement-service typed getters read the same source of truth", () =
     expect(hasCapability("FREE", "ADVANCED_INTELLIGENCE")).toBe(false);
     expect(hasCapability("BASIC", "ADVANCED_INTELLIGENCE")).toBe(true);
     expect(hasCapability("BUSINESS", "ADVANCED_INTELLIGENCE")).toBe(true);
+  });
+});
+
+describe("plan-limits.ts mirror agrees with the control-plane seed (PLAN_ENTITLEMENTS)", () => {
+  const TIERS: PlanTier[] = ["FREE", "BASIC", "BUSINESS"];
+  it.each(TIERS)("%s: analysisRun / monitoringSlots / intelligenceAdvanced match", (tier) => {
+    const seed = PLAN_ENTITLEMENTS[tier];
+    const mirror = getPlanLimits(tier);
+    expect(seed.analysisRun).toBe(mirror.maxAnalysesPer24h);
+    expect(seed.monitoringSlots).toBe(mirror.maxActiveMonitoredStores);
+    expect(seed.intelligenceAdvanced).toBe(mirror.advancedIntelligence);
   });
 });
 

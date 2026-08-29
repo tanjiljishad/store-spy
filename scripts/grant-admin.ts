@@ -45,27 +45,35 @@ async function main() {
     process.exit(1);
   }
 
-  const existing = await prisma.user.findUnique({ where: { email }, select: { id: true, email: true, role: true } });
+  // B2 2·B: identity is control_plane.users; the admin role lives in
+  // store_spy.UserAdminRole (absent row == USER).
+  const existing = await prisma.cpUser.findUnique({ where: { email }, select: { id: true, email: true } });
   if (!existing) {
     console.error(`No user with email "${email}"`);
     process.exit(1);
   }
+  const currentRole = (await prisma.userAdminRole.findUnique({ where: { userId: existing.id }, select: { role: true } }))?.role ?? "USER";
 
   const updated = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.update({
-      where: { id: existing.id },
-      data: { role: role as (typeof VALID_ROLES)[number] },
-      select: { id: true, email: true, role: true },
-    });
+    const newRole = role as (typeof VALID_ROLES)[number];
+    if (newRole === "USER") {
+      await tx.userAdminRole.deleteMany({ where: { userId: existing.id } });
+    } else {
+      await tx.userAdminRole.upsert({
+        where: { userId: existing.id },
+        create: { userId: existing.id, role: newRole },
+        update: { role: newRole },
+      });
+    }
     await recordAdminAction(tx, {
       actorId: "system:bootstrap",
       actorEmail: "system:bootstrap",
       action: "user.role.update",
       targetType: "User",
-      targetId: user.id,
-      metadata: { fromRole: existing.role, toRole: role, via: "scripts/grant-admin.ts" },
+      targetId: existing.id,
+      metadata: { fromRole: currentRole, toRole: role, via: "scripts/grant-admin.ts" },
     });
-    return user;
+    return { id: existing.id, email: existing.email, role: newRole };
   });
 
   console.log(JSON.stringify(updated, null, 2));

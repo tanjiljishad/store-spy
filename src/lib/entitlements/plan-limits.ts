@@ -8,9 +8,9 @@
  *     — small primitives with no pricing knowledge, used app-wide.
  *   - `PLAN_LIMITS` / `getPlanLimits()` — a COARSE mirror of the tier matrix,
  *     read only by entitlement-service.ts for the upgrade-prompt copy, the
- *     FREE downgrade-cascade limit, and plan-parity.ts. It is kept in step
- *     with the control-plane seed by `plan-parity.ts` / `npm run verify:b2-step1`;
- *     never gate on it.
+ *     FREE downgrade-cascade limit, and dashboard labels. `plan-limits.test.ts`
+ *     asserts it agrees cell-for-cell with `PLAN_ENTITLEMENTS` in
+ *     control-plane/provision.ts (what actually gets seeded). Never gate on it.
  *
  * Deliberately Prisma-free: PlanTier is hand-mirrored as a string union
  * rather than imported from @prisma/client, so this stays unit-testable with
@@ -37,9 +37,9 @@ export interface PlanLimits {
 }
 
 /**
- * Coarse mirror of the M12 tier matrix — display / downgrade-cascade / parity
- * only (see this file's header). The control-plane entitlement quotas are the
- * real thing; `plan-parity.ts` asserts these agree.
+ * Coarse mirror of the M12 tier matrix — display / downgrade-cascade only (see
+ * this file's header). The control-plane entitlement quotas are the real thing;
+ * `plan-limits.test.ts` asserts this matches `PLAN_ENTITLEMENTS` (provision.ts).
  */
 const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
   FREE: { maxAnalysesPer24h: 10, maxActiveMonitoredStores: 1, monitoringDurationDays: null, advancedIntelligence: false },

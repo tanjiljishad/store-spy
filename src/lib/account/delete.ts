@@ -95,10 +95,10 @@ export async function deleteOwnAccount(prisma: PrismaClient, userId: string): Pr
       data: { targetId: tombstoneUserId(userId) },
     });
 
-    // Legacy shadow store_spy.User row (only exists for pre-3b accounts;
-    // dropped wholesale in step 4). deleteMany so a new account with no shadow
-    // row is a no-op — the cpAccount delete above already erased everything.
-    await tx.user.deleteMany({ where: { id: userId } });
+    // The `cpAccount.deleteMany` above erased everything: control_plane.users
+    // and, through the ON DELETE CASCADE *_userId_fkey constraints, every
+    // store_spy child (Watchlist / AnalysisUsage / Account / Session /
+    // AdminPermissionGrant / UserAdminRole / MarketingConsent).
 
     return { outcome: "deleted", auditRowsTombstoned: affected.length };
   });
