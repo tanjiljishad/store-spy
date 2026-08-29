@@ -27,18 +27,25 @@
 services:
   - type: web
     name: store-spy-web
-    runtime: node
     plan: starter
     region: oregon
-    branch: main
-    buildCommand: npm ci && npm run prisma:generate && npm run build
-    # Applies pending migrations before the new web instance takes traffic.
-    # Runs once per deploy, only on the web service — the worker's own build
-    # does NOT also run this, so exactly one process applies migrations per
-    # deploy, never two racing each other.
-    preDeployCommand: npx prisma migrate deploy
-    startCommand: npm run start
-    healthCheckPath: /
+    # B4: no build on the host. CI (.github/workflows/ci.yml) builds the image
+    # from the Dockerfile and pushes it to GHCR; Render pulls it. Replace
+    # OWNER/REPO with the real GitHub path (the repo rename is pending — see
+    # docs/staging-deployment.md), and — GHCR packages are private by default —
+    # add a registry credential in the Render dashboard (Settings → Registry
+    # Credentials). Redeploy on a new `:latest` via Render's image auto-deploy
+    # or a CI deploy hook.
+    runtime: image
+    image:
+      url: ghcr.io/OWNER/REPO:latest
+    # No preDeployCommand and no startCommand: the image's ENTRYPOINT runs
+    # `prisma migrate deploy` then `node server.js` for the default `web` role,
+    # and healthCheckPath below only goes green once that server is answering —
+    # so traffic is never routed before migrations are applied. One mechanism,
+    # identical to docker-compose.yml. The worker service (CMD override
+    # `worker`) never migrates.
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
@@ -135,14 +142,15 @@ services:
 
   - type: worker
     name: store-spy-worker
-    runtime: node
     plan: starter
     region: oregon
-    branch: main
-    # No preDeployCommand here — migrations are applied once, by the web
-    # service above. The worker's build only needs a generated Prisma client.
-    buildCommand: npm ci && npm run prisma:generate
-    startCommand: npm run worker
+    # Same image as the web service (keep the tag in lockstep). `dockerCommand`
+    # overrides the image's default CMD (`web`) so the ENTRYPOINT runs the
+    # `worker` role — the scheduler cycle, which NEVER runs migrations.
+    runtime: image
+    image:
+      url: ghcr.io/OWNER/REPO:latest
+    dockerCommand: worker
     envVars:
       - key: NODE_ENV
         value: production
