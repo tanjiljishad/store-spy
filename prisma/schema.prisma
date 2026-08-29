@@ -1404,6 +1404,9 @@ model CpUser {
   passwordHash String?       @map("password_hash")
   accountRole  CpAccountRole @default(OWNER) @map("account_role")
   createdAt    DateTime      @default(now()) @map("created_at")
+  /// Mirrors store_spy.User.updatedAt (B2 step 3 prep migration). Only read
+  /// by the GDPR self-export today; repointed off store_spy.User in commit 3.
+  updatedAt    DateTime      @updatedAt @map("updated_at")
 
   // --- B2 step 1: identity columns migrated off store_spy.User. Nullable so
   // the additive migration doesn't need a value for every column on every
@@ -1489,6 +1492,14 @@ model CpSubscription {
   periodEnd   DateTime?            @map("period_end")
   /// The provider's subscription handle, once one exists. Null until then.
   providerRef String?              @map("provider_ref")
+  /// The tier this subscription is for — "FREE" / "BASIC" / "BUSINESS" today.
+  /// A plain string, NOT a control_plane enum: pricing/tier changes and other
+  /// products' tier names must not each require a migration, and the
+  /// store_spy.PlanTier enum itself is dropped in step 4. Answers "what did
+  /// this account buy" directly, so tier is never inferred from entitlement
+  /// quota values. Nullable only until B2 2·B commit 3 makes every writer
+  /// populate it (commit 3 tightens it to NOT NULL).
+  planSlug    String?              @map("plan_slug")
   createdAt   DateTime             @default(now()) @map("created_at")
 
   entitlements CpEntitlement[]
