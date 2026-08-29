@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+# Builds happen here and the deploy target pulls the image — nothing is built
+# on the production host. See docs/staging-deployment.md.
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: ecom_intel_test
+          # Event headlines contain → and — — pin the encoding, same as
+          # docker-compose.test.yml, so createMany() doesn't die on the first arrow.
+          POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+        # 5433 on the host: vitest.integration.setup.ts's preflight hard-checks
+        # this exact port before it will run a suite that TRUNCATEs tables.
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d ecom_intel_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci
+      - run: npx prisma generate
+
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+      # db:test:migrate and test:integration both `dotenv -e .env.test`; CI has
+      # no .env.test (gitignored), so write a throwaway one pointed at the
+      # service Postgres. Dummy secrets — nothing here needs a real one.
+      - name: Write .env.test
+        run: |
+          cat > .env.test <<'EOF'
+          DATABASE_URL="postgresql://app:app@localhost:5433/ecom_intel_test?options=-c%20search_path%3Dstore_spy%2Cpublic"
+          AUTH_SECRET="ci-dummy-ci-dummy-ci-dummy-ci-dummy-0001"
+          SCHEDULER_SECRET="ci-dummy-scheduler-secret-0000000000000001"
+          CONTROL_PLANE_INTERNAL_SECRET="ci-dummy-internal-secret"
+          EOF
+
+      - run: npm run db:test:migrate
+      - run: npm run test:integration
+
+  image:
+    # Gate the image on green tests; only publish for main / version tags,
+    # never for a PR.
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
