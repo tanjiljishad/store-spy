@@ -107,3 +107,28 @@ export async function resolveEntitlement(
         cmp(a.id, b.id), // then row id — a total order, so always deterministic
     )[0].result;
 }
+
+/**
+ * TRANSITIONAL (B2 step 2·B): a coarse plan name for DISPLAY and the
+ * upgrade-prompt hint only — never a gate (gates call resolveEntitlement per
+ * feature). Derived from the account's `store_spy.analysis.run` ceiling (the
+ * M12 matrix: 10 = FREE, 50 = BASIC, 100 = BUSINESS). No entitlement /
+ * inactive subscription reads as FREE. This is what `session.ts` fills
+ * `CurrentUser.plan` with now that the JWT no longer carries a plan claim.
+ *
+ * Removed in commit 3 together with `CurrentUser.plan` itself. Until then this
+ * runs on EVERY `getCurrentUser()` call — one extra entitlements query per
+ * authenticated request, whether or not the caller reads `plan`. If commit 3
+ * slips, that cost is silent. Grep "TRANSITIONAL (B2 step 2·B)".
+ */
+export async function resolvePlanSlug(
+  prisma: Pick<PrismaClient, "cpEntitlement">,
+  userId: string,
+  now: Date = new Date(),
+): Promise<"FREE" | "BASIC" | "BUSINESS"> {
+  const ent = await resolveEntitlement(prisma, { accountId: `acct_${userId}`, featureKey: "store_spy.analysis.run" }, now);
+  if (!ent.allowed) return "FREE";
+  if (ent.quota === 100) return "BUSINESS";
+  if (ent.quota === 50) return "BASIC";
+  return "FREE";
+}

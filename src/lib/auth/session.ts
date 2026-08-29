@@ -1,10 +1,21 @@
 import { auth } from "./auth";
+import { prisma } from "../db/prisma";
+import { resolvePlanSlug } from "../control-plane/entitlements";
 import type { PlanTier } from "../entitlements/plan-limits";
 import type { Role } from "../admin/roles";
 
 export interface CurrentUser {
   id: string;
   email: string;
+  /**
+   * TRANSITIONAL (B2 step 2·B): no longer a JWT claim. Derived fresh from the
+   * account's current entitlements every call via resolvePlanSlug() (the 60s
+   * staleness window is gone). Still a COARSE label for display and the
+   * upgrade prompt — never a gate; every gate calls resolveEntitlement per
+   * feature. Removed in commit 3 once the UI reads entitlements directly — at
+   * which point the resolvePlanSlug() call below stops running on every
+   * authenticated request. Grep "TRANSITIONAL (B2 step 2·B)".
+   */
   plan: PlanTier;
   role: Role;
 }
@@ -19,10 +30,11 @@ export interface CurrentUser {
 export async function getCurrentUser(): Promise<CurrentUser | null> {
   const session = await auth();
   if (!session?.user?.id) return null;
+  const id = session.user.id;
   return {
-    id: session.user.id,
+    id,
     email: session.user.email ?? "",
-    plan: session.user.plan as PlanTier,
+    plan: await resolvePlanSlug(prisma, id),
     role: (session.user.role as Role) ?? "USER",
   };
 }

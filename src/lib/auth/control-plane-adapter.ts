@@ -5,25 +5,31 @@ import { randomUUID } from "node:crypto";
 import { provisionStoreSpyAccount, trialEndsFromNow } from "../control-plane/provision";
 
 /**
- * B2 step 2·A adapter. Wraps the stock `@auth/prisma-adapter` (which still
- * reads/writes `store_spy.User`) and overrides ONLY the two methods that
- * create or mutate a user, so that OAuth first sign-in also provisions the
- * control-plane account (`control_plane.{accounts,users,subscriptions,
- * entitlements}`).
+ * The Auth.js adapter. Wraps `@auth/prisma-adapter` for the `Account` /
+ * `Session` / `VerificationToken` plumbing (still `store_spy` tables) but
+ * routes every USER read and write to `control_plane.users` — that is the
+ * account of record (B2 2·B).
  *
- * TRANSITIONAL: every override here ALSO writes a shadow `store_spy.User`
- * row (same id) — the `*_userId_fkey` constraints still point at
- * `store_spy.User` until migration `20260828180000` (B2 step 2), and gates +
- * billing still read `User.plan` until B2 step 2·B. **B2 step 2·B replaces
- * this whole file with a control-plane-native adapter and removes the shadow
- * writes.** If that step slips, this scaffolding is what silently keeps the
- * old FK satisfiable — grep for "TRANSITIONAL (B2 step 2·B)".
+ * TRANSITIONAL (B2 step 2·B commit 3): createUser/updateUser also write a
+ * shadow `store_spy.User` row so the non-auth `store_spy.User` readers
+ * (dashboard label, account/export, consent gates) keep working until they
+ * are repointed. Commit 3 removes those writes. Grep "TRANSITIONAL (B2 step 2·B)".
  */
 export function controlPlaneAdapter(prisma: PrismaClient): Adapter {
   const base = PrismaAdapter(prisma);
 
   return {
     ...base,
+
+    getUser: (id) => cpUserToAdapter(prisma, { id }),
+    getUserByEmail: (email) => cpUserToAdapter(prisma, { email }),
+    async getUserByAccount({ provider, providerAccountId }) {
+      const account = await prisma.account.findUnique({
+        where: { provider_providerAccountId: { provider, providerAccountId } },
+        select: { userId: true },
+      });
+      return account ? cpUserToAdapter(prisma, { id: account.userId }) : null;
+    },
 
     async createUser(user) {
       const id = randomUUID();
@@ -91,4 +97,15 @@ function toAdapterUser(row: {
   emailVerified: Date | null;
 }): AdapterUser {
   return { id: row.id, email: row.email, name: row.name, image: row.image, emailVerified: row.emailVerified };
+}
+
+async function cpUserToAdapter(
+  prisma: PrismaClient,
+  where: { id: string } | { email: string },
+): Promise<AdapterUser | null> {
+  const u = await prisma.cpUser.findUnique({
+    where,
+    select: { id: true, email: true, name: true, image: true, emailVerifiedAt: true },
+  });
+  return u ? toAdapterUser({ ...u, emailVerified: u.emailVerifiedAt }) : null;
 }

@@ -126,9 +126,16 @@ expiry takes effect on the caller's *next gated action*, with no window. The
 cost (Q6, accepted): `/api/analyze` and `/api/store/[domain]/watch` each gain
 one indexed same-Postgres query where they previously read a token field.
 
-**`session.ts`**: `CurrentUser` loses `plan`. `getCurrentUser()` returns
-`{ id, email?, role }`. The ~4 sites that read `user.plan` switch to an
-entitlements call (step 3).
+**`session.ts`**: `plan` leaves the JWT/session claim in commit 2, but
+`CurrentUser.plan` is **kept as transitional scaffolding** — commit 2 fills it
+per-call from `resolvePlanSlug()` (an entitlements read derived from the
+`store_spy.analysis.run` ceiling) so the ~4 UI/route sites that read
+`user.plan` keep working while the auth layer moves. Commit 3 removes
+`CurrentUser.plan`, `resolvePlanSlug()`, and those ~4 readers together; until
+then `getCurrentUser()` runs one extra entitlements query per authenticated
+request whether or not the caller reads `plan`. Both the field and the
+function carry the `TRANSITIONAL (B2 step 2·B)` grep marker so a slipped
+commit 3 doesn't leave that query silently in place.
 
 **`jwt-plan-refresh.ts` → `jwt-session-refresh.ts`**, slimmed to **existence +
 revocation only**:

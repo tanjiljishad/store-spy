@@ -4,7 +4,8 @@ declare module "next-auth" {
   interface Session {
     user: {
       id: string;
-      plan: string;
+      // B2 2·B: `plan` is no longer a session/JWT claim — CurrentUser.plan
+      // (session.ts) is derived from entitlements per call.
       role: string;
     } & DefaultSession["user"];
   }
@@ -13,9 +14,8 @@ declare module "next-auth" {
 declare module "next-auth/jwt" {
   interface JWT {
     id?: string;
-    plan?: string;
     role?: string;
-    /** Date.now() (ms) of the last live User-row read — see PLAN_CHECK_TTL_MS in auth.ts. Ignored entirely when role is anything other than "USER" — see jwt-plan-refresh.ts. */
-    planCheckedAt?: number;
+    /** Date.now() (ms) of the last live control_plane.users read — see SESSION_CHECK_TTL_MS in jwt-session-refresh.ts. Ignored while role is anything other than "USER". */
+    sessionCheckedAt?: number;
   }
 }
