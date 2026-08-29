@@ -1,12 +1,16 @@
 # Staging Deployment — Render + Neon
 
-Originated in Milestone 8 Sub-phase B, updated in Sub-phase C. Status of this
-document: **configuration prepared, not yet applied.** No Render or Neon
+Originated in Milestone 8 Sub-phase B, updated in Sub-phase C, and again in B4
+(Dockerfile + `docker-compose.yml` + `/api/health` + `.github/workflows/ci.yml`
++ `render.yaml` converted to `runtime: image`). Status of this document:
+**configuration prepared, not yet applied.** No Render or Neon
 account/credentials exist in this development environment, so the actual
 cloud deployment described below remains **BLOCKED** — it has not been
-executed and this document does not claim otherwise (Sub-phase C confirmed
-this is still the case and asked the user directly, who chose to proceed with
-every locally-verifiable task instead of supplying credentials). Every
+executed and this document does not claim otherwise. B4's containerization was
+verified locally end-to-end (see "Build & image" below): the image builds, the
+`web` role migrates-then-serves with `/api/health` green, the `worker` role
+runs a full scheduler cycle, and `docker compose up` brings the whole stack up
+from an empty database. Every
 verification that does not require real cloud infrastructure (real Postgres
 via a disposable local instance, real Shopify crawls, real scheduler ticks,
 the real worker process, a **real production build run via `next start`**,
@@ -36,10 +40,10 @@ INTERNET
    |
    v
 Render Web Service (store-spy-web)  --- Neon Postgres (managed, pooled)
-   Next.js, `npm run start`               ^
-                                           |
+   the image, ENTRYPOINT role `web`        ^
+   (migrate deploy -> node server.js)      |
 Render Worker Service (store-spy-worker) -
-   `npm run worker`
+   the SAME image, role `worker`
 ```
 
 Two Render services, one Neon database. No queue, no Redis, no separate
@@ -50,6 +54,45 @@ disposable local one used for development/testing. See
 for why this pairing (Render + Neon) was chosen over the equally-valid
 Fly.io/Supabase alternative — this document commits to one concrete
 combination rather than leaving both open.
+
+## Build & image (B4)
+
+**Nothing is built on the deploy host.** `.github/workflows/ci.yml` runs the
+full test gate (lint, typecheck, unit, integration against a Postgres service)
+and, on a push to `main` or a `v*` tag, builds the image from the repo-root
+`Dockerfile` and pushes it to **GHCR** as
+`ghcr.io/<owner>/<repo>:latest` (plus `:sha-…` and, for tags,
+`:<version>`). Render pulls that image; `render.yaml`'s two services are
+`runtime: image` pointing at the same tag.
+
+One image, two roles, selected by the container command (`docker-entrypoint.sh`):
+
+| role | command | does |
+|---|---|---|
+| `web` (default `CMD`) | — | `prisma migrate deploy`, then `node server.js` (Next standalone) |
+| `worker` | `dockerCommand: worker` in `render.yaml` | the scheduler cycle; **never** migrates |
+
+Because the `web` entrypoint applies migrations before `node server.js`, and
+`healthCheckPath: /api/health` only goes green once that server answers, Render
+never routes traffic before the schema is current — so there is **no
+`preDeployCommand`** any more. The same entrypoint runs identically under
+`docker compose` and a bare `docker run`.
+
+Before the first deploy:
+
+1. **Set the real image path.** `render.yaml` ships `ghcr.io/OWNER/REPO:latest`
+   as a placeholder — replace `OWNER/REPO` with the actual GitHub path once the
+   repo is (re)named (`Store Spy` rebrand, still pending).
+2. **Add a GHCR registry credential in Render** (Settings → Registry
+   Credentials) — GHCR packages are private by default. Use a GitHub PAT with
+   `read:packages`, or make the package public.
+3. **Redeploy on a new image.** Enable Render's image auto-deploy on `:latest`,
+   or call a Render deploy hook from CI after the push step.
+
+For a local production-parity run of the whole stack (Postgres + web + worker
+from the built image): `cp .env.example .env`, fill in values, then
+`docker compose up --build` (see `docker-compose.yml`; distinct from
+`docker-compose.test.yml`, which is Postgres-only for the integration suite).
 
 ## Prerequisites (manual, human-performed — not automatable from this repo)
 
@@ -83,23 +126,23 @@ combination rather than leaving both open.
    Section 27 for choosing a provider with bundled pooling).
 2. **Connect this repository to Render** as a Blueprint (`render.yaml` at the
    repo root, already committed — Render detects it automatically when
-   creating a new Blueprint instance from this repo).
+   creating a new Blueprint instance from this repo). Do the "Build & image"
+   prerequisites above first (real `OWNER/REPO`, GHCR credential).
 3. **Set the real env var values** for both services in the Render dashboard
    (never in `render.yaml` — every variable there is `sync: false`
    deliberately). Use the checklist below.
-4. **Deploy.** Render's `preDeployCommand` on the web service
-   (`npx prisma migrate deploy`) applies all existing migrations to the new,
-   empty Neon database automatically on first deploy — no manual migration
-   step needed. Confirm via Render's deploy log that this step reports
-   `All migrations have been successfully applied.` before the web service
-   starts serving traffic. **If the target database is NOT empty, read
-   "Database migrations" below first.**
+4. **Deploy.** The web image's ENTRYPOINT runs `prisma migrate deploy` on
+   startup, applying all existing migrations to the new, empty Neon database
+   automatically — no manual migration step, no `preDeployCommand`. Confirm via
+   Render's log that it reports `All migrations have been successfully applied.`
+   and then `[entrypoint] starting web server` before the health check goes
+   green. **If the target database is NOT empty, read "Database migrations"
+   below first.**
 5. **Verify both services are alive**: the web service's health check
-   (`healthCheckPath: /` in `render.yaml`) should go green; the worker
-   service has no HTTP surface to check directly — confirm via its logs
-   showing a `worker.starting` line followed by periodic
-   `worker.cycle_completed` lines (see `scripts/worker.ts`'s structured
-   logging).
+   (`healthCheckPath: /api/health` — `200 {"status":"ok","db":"ok"}`) should go
+   green; the worker service has no HTTP surface — confirm via its logs showing
+   a `worker.starting` line followed by periodic `worker.cycle_completed` lines
+   (see `scripts/worker.ts`'s structured logging).
 6. **Do not seed fake data.** Per this sub-phase's own instruction, the
    staging corpus must be generated through the real application pipeline —
    sign up a real (test) account, analyze a small number of real public
