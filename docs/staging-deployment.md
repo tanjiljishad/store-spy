@@ -1,9 +1,17 @@
-# Staging Deployment — Render + Neon
+# Staging Deployment
+
+Two host options are prepared, both consuming the **same** CI-built GHCR image:
+
+- **Render + Neon** — managed PaaS, `render.yaml`. Sections "Target
+  architecture" through "Post-deploy verification" below.
+- **Self-hosted VPS (Contabo)** — `docker compose` on a plain Linux box,
+  `deploy/contabo-deploy.sh`. See "Deploying to a self-hosted VPS (Contabo)"
+  below.
 
 Originated in Milestone 8 Sub-phase B, updated in Sub-phase C, and again in B4
 (Dockerfile + `docker-compose.yml` + `/api/health` + `.github/workflows/ci.yml`
-+ `render.yaml` converted to `runtime: image`). Status of this document:
-**configuration prepared, not yet applied.** No Render or Neon
++ `render.yaml` converted to `runtime: image`; the Contabo path added after).
+Status of this document: **configuration prepared, not yet applied.** No Render or Neon
 account/credentials exist in this development environment, so the actual
 cloud deployment described below remains **BLOCKED** — it has not been
 executed and this document does not claim otherwise. B4's containerization was
@@ -93,6 +101,78 @@ For a local production-parity run of the whole stack (Postgres + web + worker
 from the built image): `cp .env.example .env`, fill in values, then
 `docker compose up --build` (see `docker-compose.yml`; distinct from
 `docker-compose.test.yml`, which is Postgres-only for the integration suite).
+
+## Deploying to a self-hosted VPS (Contabo)
+
+Same GHCR image as the Render path, run with `docker compose` on a plain Linux
+host. Files:
+
+| file | role |
+|---|---|
+| `docker-compose.yml` | the stack (Postgres + web + worker), shared with local runs |
+| `docker-compose.prod.yml` | override: drops `build:`, sets `image: ${IMAGE}:${IMAGE_TAG}` + `pull_policy: always` + `restart: unless-stopped`. Needs Docker Compose >= 2.24 for the `!reset` tag |
+| `deploy/contabo-deploy.sh` | `docker login ghcr.io` -> `pull` -> `up -d` -> `/api/health` gate (rollback on fail) -> image prune |
+| `deploy/deploy.env.example` | template for `deploy/deploy.env` (GHCR PAT, `IMAGE`, `KEEP_IMAGES`, ...) — the real file is gitignored |
+
+### One-time host setup
+
+```sh
+# On the VPS:
+git clone <repo> && cd <repo>
+cp .env.example .env                                   # real app secrets — edit
+cp deploy/deploy.env.example deploy/deploy.env
+chmod 600 deploy/deploy.env                            # holds a real token
+$EDITOR deploy/deploy.env                              # GHCR_USER, GHCR_TOKEN, IMAGE
+```
+
+- **`GHCR_TOKEN`** is a GitHub PAT with **only** `read:packages` (classic) or a
+  fine-grained token with "Packages: read". Not a password. This is the
+  self-hosted equivalent of adding a Registry Credential in the Render
+  dashboard — GHCR packages are private by default, so the host cannot pull
+  without it. The deploy script pipes it to `docker login ghcr.io` via
+  `--password-stdin` (never on the command line).
+- **`IMAGE`** is `ghcr.io/<owner>/<repo>` with no tag, matching what CI pushes
+  (`ghcr.io/${{ github.repository }}`). `IMAGE_TAG` defaults to `latest`.
+- The host still needs a normal `.env` (the base compose file's
+  `env_file: .env`). If you use managed Postgres instead of the in-stack one,
+  see the comment block at the bottom of `docker-compose.prod.yml`.
+- Put a TLS-terminating reverse proxy (Caddy / nginx / Traefik) in front of
+  `WEB_PORT`; only the web service needs to be reachable, and the worker has no
+  HTTP surface at all.
+
+### Deploy / redeploy / roll back
+
+```sh
+./deploy/contabo-deploy.sh                    # deploy IMAGE_TAG (default: latest)
+IMAGE_TAG=sha-abc1234 ./deploy/contabo-deploy.sh   # pin, or roll back, to a build
+```
+
+The script: logs in to GHCR; records the currently-deployed image id;
+`docker compose ... pull` then `up -d`; polls `http://localhost:${WEB_PORT}/api/health`
+for up to 5 min. Because the `web` entrypoint runs `prisma migrate deploy`
+before it serves, a green `/api/health` also means the schema is current — so,
+as on Render, there is no separate migration step. **On health-check failure**
+it re-tags the previous image and `up -d`s again (rollback), dumps the last 60
+lines of `web` logs, and exits non-zero.
+
+CI still builds and pushes on every push to `main` / `v*` tag; this script is
+what you run on the host afterwards (by hand, or from a deploy hook / cron /
+`ssh` step). Nothing is built on the VPS.
+
+### Image pruning on the host
+
+The image is ~1.2 GB per version. On Contabo's 75 GB disk, unbounded pulls
+would fill the host in a few dozen deploys (Postgres's volume and logs grow
+into the same 75 GB). After a **successful** rollout the script keeps the
+`KEEP_IMAGES` (default 3: current + two rollback targets) most-recent versions
+of the repo and `docker rmi`s the older ones, then `docker image prune -f`
+clears the now-dangling layers from the previous `:latest`. Pruning is
+deliberately last — a failed deploy keeps every prior image so the rollback
+path has something to re-tag.
+
+Check headroom any time with `docker system df`. A manual sweep, if a deploy
+was interrupted before its prune: `docker image prune -f && docker builder prune -f`
+(the host never builds, so `builder prune` is normally a no-op).
 
 ## Prerequisites (manual, human-performed — not automatable from this repo)
 

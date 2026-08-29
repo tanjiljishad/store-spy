@@ -1,0 +1,5 @@
+# Shell scripts must stay LF in the repo — they run on Linux (the Docker image,
+# the Contabo deploy host, CI). A CRLF checkout on a Windows dev machine would
+# otherwise be committed back with `\r`, and `#!/usr/bin/env bash\r` fails.
+*.sh text eol=lf
+docker-entrypoint.sh text eol=lf
