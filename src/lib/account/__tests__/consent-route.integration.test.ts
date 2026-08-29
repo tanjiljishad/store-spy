@@ -61,7 +61,7 @@ describe("POST /api/account/consent", () => {
 
   it("400s when tosAccepted is missing or false — never sets tosAcceptedAt", async () => {
     const user = await makeOAuthShapedUser();
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const missing = await postConsent(req({}));
     expect(missing.status).toBe(400);
@@ -74,7 +74,7 @@ describe("POST /api/account/consent", () => {
 
   it("with tosAccepted true, sets tosAcceptedAt and leaves marketingConsent false by default", async () => {
     const user = await makeOAuthShapedUser();
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const res = await postConsent(req({ tosAccepted: true }));
     expect(res.status).toBe(200);
@@ -86,7 +86,7 @@ describe("POST /api/account/consent", () => {
 
   it("with tosAccepted true and marketingConsent true, grants marketing consent with the oauth source", async () => {
     const user = await makeOAuthShapedUser();
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const res = await postConsent(req({ tosAccepted: true, marketingConsent: true }));
     expect(res.status).toBe(200);

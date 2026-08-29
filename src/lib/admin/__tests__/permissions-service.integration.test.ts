@@ -26,7 +26,7 @@ async function makeUser(role: "USER" | "SUPER_ADMIN" = "USER") {
   return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role });
 }
 function actorFrom(user: { id: string; email: string; role: string }): AdminActor {
-  return { id: user.id, email: user.email, plan: "FREE", role: user.role as never };
+  return { id: user.id, email: user.email, role: user.role as never };
 }
 
 describe("isKnownPermission", () => {

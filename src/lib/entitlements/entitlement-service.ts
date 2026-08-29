@@ -2,22 +2,19 @@ import type { Limit, PlanTier } from "./plan-limits";
 import { getPlanLimits } from "./plan-limits";
 
 /**
- * Boolean-shaped capabilities only — numeric ones (MAX_UNIQUE_ANALYSES,
- * MAX_ACTIVE_MONITORED_STORES, MONITORING_DURATION_DAYS) need an actual
- * number, not a yes/no, so they're exposed as typed getters below instead
- * of being forced through a boolean hasCapability(). Both read from the
- * same plan-limits.ts table — this file is the only place in the app that
- * should ever read `user.plan` and turn it into a decision.
+ * Coarse per-tier lookups over plan-limits.ts's display/cascade matrix. B2
+ * 2·B: NOT an access-control boundary any more — every gate calls
+ * `resolveEntitlement()` per feature against the control plane. These feed
+ * the upgrade-prompt copy (UpgradePrompt.tsx), the FREE downgrade-cascade
+ * limit (subscription-sweep.ts), the FREE-watch duration ceiling (watch.ts),
+ * and plan-parity.ts's cross-check.
  */
-export type BooleanCapability = "HISTORICAL_ACCESS" | "ADVANCED_INTELLIGENCE";
+export type BooleanCapability = "ADVANCED_INTELLIGENCE";
 
 export function hasCapability(plan: PlanTier, capability: BooleanCapability): boolean {
-  const limits = getPlanLimits(plan);
   switch (capability) {
-    case "HISTORICAL_ACCESS":
-      return limits.historicalAccess;
     case "ADVANCED_INTELLIGENCE":
-      return limits.advancedIntelligence;
+      return getPlanLimits(plan).advancedIntelligence;
   }
 }
 
@@ -33,9 +30,4 @@ export function maxActiveMonitoredStores(plan: PlanTier): Limit {
 /** null means continuous monitoring — no fixed expiry. */
 export function monitoringDurationDays(plan: PlanTier): Limit {
   return getPlanLimits(plan).monitoringDurationDays;
-}
-
-/** null means no free-trial ceiling (every paid plan). See watch.ts's startMonitoring(). */
-export function freeTrialDays(plan: PlanTier): Limit {
-  return getPlanLimits(plan).freeTrialDays;
 }

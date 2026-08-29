@@ -31,7 +31,7 @@ const { requireUser } = await import("@/lib/auth/session");
 const { _resetRateLimitState } = await import("@/lib/security/rate-limit");
 
 function actor(id: string) {
-  return { id, email: `${id}@example.com`, plan: "FREE" as const, role: "USER" as const };
+  return { id, email: `${id}@example.com`, role: "USER" as const };
 }
 
 function req(body: Record<string, unknown> = {}): NextRequest {

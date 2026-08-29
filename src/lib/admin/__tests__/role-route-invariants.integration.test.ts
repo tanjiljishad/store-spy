@@ -79,7 +79,7 @@ function ctx(id: string) {
 
 /** Fires `patchRole` as `actor` targeting `targetId` — signs in fresh right before the call, since mocks are shared, not per-request. */
 async function patchAs(actor: { id: string; email: string; role: string }, targetId: string, body: unknown) {
-  vi.mocked(getCurrentUser).mockResolvedValueOnce({ id: actor.id, email: actor.email, plan: "FREE", role: actor.role as never });
+  vi.mocked(getCurrentUser).mockResolvedValueOnce({ id: actor.id, email: actor.email, role: actor.role as never });
   return patchRole(req(body), ctx(targetId));
 }
 

@@ -69,7 +69,7 @@ describe("GET /api/account/export", () => {
 
   it("returns the signed-in user's own data as a downloadable JSON attachment", async () => {
     const user = await makeUser({ plan: "BASIC" });
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "BASIC", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const res = await exportAccount();
     expect(res.status).toBe(200);
@@ -89,7 +89,7 @@ describe("POST /api/account/delete", () => {
 
   it("400s when confirmEmail is missing or doesn't match the caller's own email", async () => {
     const user = await makeUser();
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const missing = await deleteAccount(deleteReq({}));
     expect(missing.status).toBe(400);
@@ -101,7 +101,7 @@ describe("POST /api/account/delete", () => {
 
   it("deletes the account when confirmEmail matches (case/whitespace-insensitive)", async () => {
     const user = await makeUser({ email: "Real.User@Example.com" });
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 
     const res = await deleteAccount(deleteReq({ confirmEmail: "  real.USER@example.COM  " }));
     expect(res.status).toBe(200);
@@ -110,7 +110,7 @@ describe("POST /api/account/delete", () => {
 
   it("409s a lone SUPER_ADMIN attempting to delete themselves, via the real HTTP route", async () => {
     const admin = await makeUser({ role: "SUPER_ADMIN" });
-    vi.mocked(getCurrentUser).mockResolvedValue({ id: admin.id, email: admin.email, plan: "FREE", role: "SUPER_ADMIN" });
+    vi.mocked(getCurrentUser).mockResolvedValue({ id: admin.id, email: admin.email, role: "SUPER_ADMIN" });
 
     const res = await deleteAccount(deleteReq({ confirmEmail: admin.email }));
     expect(res.status).toBe(409);

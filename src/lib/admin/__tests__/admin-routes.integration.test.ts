@@ -59,7 +59,7 @@ async function makeUser(role: "USER" | "SUPPORT_ADMIN" | "BILLING_ADMIN" | "SUPE
 }
 
 function signInAs(user: { id: string; email: string; role: string }) {
-  vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: user.role as never });
+  vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: user.role as never });
 }
 
 function req(url2: string, init: { method?: string; body?: string } = {}): NextRequest {

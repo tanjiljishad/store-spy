@@ -1,22 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { ANONYMOUS_ANALYSES_PER_24H, getPlanLimits, isUnderLimit } from "../plan-limits";
-import { freeTrialDays, hasCapability, maxActiveMonitoredStores, maxAnalysesPer24h, monitoringDurationDays } from "../entitlement-service";
+import { hasCapability, maxActiveMonitoredStores, maxAnalysesPer24h, monitoringDurationDays } from "../entitlement-service";
 
 /**
- * Milestone 12 §1.1 acceptance criterion: "The plan matrix in 1.1 is
- * asserted against a literal table in a unit test, every cell." The table
- * below is transcribed directly from the milestone doc's §1.1 table —
- * every other test in this suite should be reading the SAME constants this
- * one pins, never a second hand-copied set of numbers.
+ * The coarse display/cascade tier matrix (plan-limits.ts). B2 2·B: the
+ * AUTHORITATIVE quotas live in the control plane; plan-parity.ts asserts
+ * these numbers agree with the control-plane seed. This pins the mirror.
  */
-describe("plan-limits — Milestone 12 §1.1 matrix, every cell", () => {
+describe("plan-limits — display/cascade tier matrix, every cell", () => {
   it("FREE", () => {
     expect(getPlanLimits("FREE")).toEqual({
       maxAnalysesPer24h: 10,
       maxActiveMonitoredStores: 1,
-      monitoringDurationDays: null, // "30 days from signup" is expressed via freeTrialDays + User.freeTrialEndsAt, not this field
-      freeTrialDays: 30,
-      historicalAccess: true,
+      monitoringDurationDays: null,
       advancedIntelligence: false,
     });
   });
@@ -25,9 +21,7 @@ describe("plan-limits — Milestone 12 §1.1 matrix, every cell", () => {
     expect(getPlanLimits("BASIC")).toEqual({
       maxAnalysesPer24h: 50,
       maxActiveMonitoredStores: 20,
-      monitoringDurationDays: null, // continuous
-      freeTrialDays: null,
-      historicalAccess: true,
+      monitoringDurationDays: null,
       advancedIntelligence: true,
     });
   });
@@ -36,9 +30,7 @@ describe("plan-limits — Milestone 12 §1.1 matrix, every cell", () => {
     expect(getPlanLimits("BUSINESS")).toEqual({
       maxAnalysesPer24h: 100,
       maxActiveMonitoredStores: 50,
-      monitoringDurationDays: null, // continuous
-      freeTrialDays: null,
-      historicalAccess: true,
+      monitoringDurationDays: null,
       advancedIntelligence: true,
     });
   });
@@ -67,14 +59,7 @@ describe("entitlement-service typed getters read the same source of truth", () =
     expect(monitoringDurationDays("BUSINESS")).toBeNull();
   });
 
-  it("freeTrialDays — only FREE carries a trial ceiling", () => {
-    expect(freeTrialDays("FREE")).toBe(30);
-    expect(freeTrialDays("BASIC")).toBeNull();
-    expect(freeTrialDays("BUSINESS")).toBeNull();
-  });
-
-  it("keeps existing boolean capability mapping intact", () => {
-    expect(hasCapability("FREE", "HISTORICAL_ACCESS")).toBe(true);
+  it("hasCapability — ADVANCED_INTELLIGENCE is the one remaining boolean", () => {
     expect(hasCapability("FREE", "ADVANCED_INTELLIGENCE")).toBe(false);
     expect(hasCapability("BASIC", "ADVANCED_INTELLIGENCE")).toBe(true);
     expect(hasCapability("BUSINESS", "ADVANCED_INTELLIGENCE")).toBe(true);

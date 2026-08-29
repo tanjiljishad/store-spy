@@ -4,7 +4,7 @@ import { runAnalysis } from "@/lib/analysis/run-analysis";
 import { runAnonymousProbe } from "@/lib/analysis/anonymous-probe";
 import { checkRateLimit, getClientIp } from "@/lib/security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
-import type { PlanTier } from "@/lib/entitlements/plan-limits";
+import { getPurchasedPlanSlug } from "@/lib/control-plane/entitlements";
 import type { AnalysisSseEvent } from "@/lib/analysis/types";
 
 export const runtime = "nodejs"; // needs real DNS resolution + Prisma — not available on the Edge runtime
@@ -98,7 +98,10 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const caller = { userId: user.id, plan: user.plan as PlanTier };
+  // `plan` here is the coarse purchased-tier label for the LIMIT_REACHED
+  // response envelope only — the quota itself is resolved from the control
+  // plane inside recordAnalysisUsage().
+  const caller = { userId: user.id, plan: await getPurchasedPlanSlug(prisma, user.id) };
   return streamAnalysis((send) => runAnalysis({ prisma, urlInput: url, onEvent: send, caller }));
 }
 

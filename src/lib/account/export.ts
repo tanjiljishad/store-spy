@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import { resolvePlanSlug } from "../control-plane/entitlements";
+import { getPurchasedPlanSlug } from "../control-plane/entitlements";
 
 /**
  * Milestone 12 §4.1: GDPR Art. 15 ("right of access") — the user's OWN data,
@@ -70,7 +70,7 @@ export async function exportOwnAccountData(prisma: PrismaClient, userId: string)
   });
   if (!user) return null;
 
-  const plan = await resolvePlanSlug(prisma, userId);
+  const plan = await getPurchasedPlanSlug(prisma, userId);
   const role = user.adminRole?.role ?? "USER";
   const freeTrialEndsAt = user.account.subscriptions.find((s) => s.status === "TRIALING")?.periodEnd ?? null;
   const marketingConsent = user.marketingConsent?.consent ?? false;

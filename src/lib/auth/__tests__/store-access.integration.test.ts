@@ -52,7 +52,7 @@ beforeEach(async () => {
 });
 
 function mockSignedInAs(userId: string) {
-  vi.mocked(getCurrentUser).mockResolvedValue({ id: userId, email: "", plan: "FREE", role: "USER" });
+  vi.mocked(getCurrentUser).mockResolvedValue({ id: userId, email: "", role: "USER" });
 }
 function mockAnonymous() {
   vi.mocked(getCurrentUser).mockResolvedValue(null);

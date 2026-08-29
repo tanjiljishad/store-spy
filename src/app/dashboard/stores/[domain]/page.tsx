@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 import { requireUser, UnauthorizedError } from "@/lib/auth/session";
 import { hasAnalyzedStore, recordAnalysisUsage } from "@/lib/entitlements/analysis-usage";
 import { maxActiveMonitoredStores } from "@/lib/entitlements/entitlement-service";
+import { getPurchasedPlanSlug } from "@/lib/control-plane/entitlements";
 import { buildStoreIntelligenceReport } from "@/lib/intelligence/report";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { daysRemaining } from "@/lib/days-remaining";
@@ -79,10 +80,13 @@ export default async function StoreIntelligencePage({ params, searchParams }: St
     );
   }
 
-  const [report, myWatch, otherActiveWatchCount] = await Promise.all([
+  const [report, myWatch, otherActiveWatchCount, plan] = await Promise.all([
     buildStoreIntelligenceReport(prisma, store.id, domain, user.id, true),
     prisma.watchlist.findUnique({ where: { userId_storeId: { userId: user.id, storeId: store.id } } }),
     prisma.watchlist.count({ where: { userId: user.id, monitoringStatus: "ACTIVE", storeId: { not: store.id } } }),
+    // Display copy for the MonitorButton — the real ceiling is enforced by
+    // startMonitoring() against the control plane.
+    getPurchasedPlanSlug(prisma, user.id),
   ]);
 
   const watchDaysRemaining =
@@ -113,8 +117,8 @@ export default async function StoreIntelligencePage({ params, searchParams }: St
             watchStatus={watchStatus}
             daysRemaining={watchDaysRemaining}
             otherActiveWatchCount={otherActiveWatchCount}
-            monitorLimit={maxActiveMonitoredStores(user.plan)}
-            planLabel={planLabel(user.plan)}
+            monitorLimit={maxActiveMonitoredStores(plan)}
+            planLabel={planLabel(plan)}
           />
         </div>
       </div>

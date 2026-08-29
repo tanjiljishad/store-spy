@@ -61,7 +61,7 @@ function req(path: string, ip = "203.0.113.1"): NextRequest {
 async function signInAsAnalyzerOf(storeId: string): Promise<void> {
   const user = await makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan: "FREE" });
   await prisma.analysisUsage.create({ data: { userId: user.id, storeId } });
-  vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, plan: "FREE", role: "USER" });
+  vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: "USER" });
 }
 
 describe("GET /api/store/[domain]/events", () => {

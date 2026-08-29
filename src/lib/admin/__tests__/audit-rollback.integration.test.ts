@@ -44,7 +44,7 @@ afterEach(() => {
 
 async function makeActor(): Promise<AdminActor> {
   const u = await makeStoreSpyUser(prisma, { role: "SUPER_ADMIN" });
-  return { id: u.id, email: u.email, plan: "FREE", role: "SUPER_ADMIN" };
+  return { id: u.id, email: u.email, role: "SUPER_ADMIN" };
 }
 
 describe("admin writes pair with exactly one audit row, atomically", () => {

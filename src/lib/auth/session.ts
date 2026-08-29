@@ -1,40 +1,32 @@
 import { auth } from "./auth";
-import { prisma } from "../db/prisma";
-import { resolvePlanSlug } from "../control-plane/entitlements";
-import type { PlanTier } from "../entitlements/plan-limits";
 import type { Role } from "../admin/roles";
 
 export interface CurrentUser {
   id: string;
   email: string;
   /**
-   * TRANSITIONAL (B2 step 2·B): no longer a JWT claim. Derived fresh from the
-   * account's current entitlements every call via resolvePlanSlug() (the 60s
-   * staleness window is gone). Still a COARSE label for display and the
-   * upgrade prompt — never a gate; every gate calls resolveEntitlement per
-   * feature. Removed in commit 3 once the UI reads entitlements directly — at
-   * which point the resolvePlanSlug() call below stops running on every
-   * authenticated request. Grep "TRANSITIONAL (B2 step 2·B)".
+   * Still a JWT claim (the staff/customer split is B2.5). Everything ELSE
+   * about entitlement — plan, quotas, capabilities — is fetched fresh from
+   * the control plane at the point of use: `resolveEntitlement()` to gate,
+   * `getPurchasedPlanSlug()` for a display label. `CurrentUser` deliberately
+   * carries neither.
    */
-  plan: PlanTier;
   role: Role;
 }
 
 /**
- * Returns the signed-in user's id/plan/role, or null for an anonymous
- * caller. This — not proxy.ts — is the actual security boundary: every
- * protected route/page calls this itself rather than trusting a proxy/
- * middleware pass to have already checked (this Next.js fork's own docs
- * say the same: a matcher change can silently drop proxy coverage).
+ * Returns the signed-in user's id/role, or null for an anonymous caller.
+ * This — not proxy.ts — is the actual security boundary: every protected
+ * route/page calls this itself rather than trusting a proxy/middleware pass
+ * to have already checked (this Next.js fork's own docs say the same: a
+ * matcher change can silently drop proxy coverage).
  */
 export async function getCurrentUser(): Promise<CurrentUser | null> {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const id = session.user.id;
   return {
-    id,
+    id: session.user.id,
     email: session.user.email ?? "",
-    plan: await resolvePlanSlug(prisma, id),
     role: (session.user.role as Role) ?? "USER",
   };
 }

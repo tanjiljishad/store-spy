@@ -109,26 +109,26 @@ export async function resolveEntitlement(
 }
 
 /**
- * TRANSITIONAL (B2 step 2·B): a coarse plan name for DISPLAY and the
- * upgrade-prompt hint only — never a gate (gates call resolveEntitlement per
- * feature). Derived from the account's `store_spy.analysis.run` ceiling (the
- * M12 matrix: 10 = FREE, 50 = BASIC, 100 = BUSINESS). No entitlement /
- * inactive subscription reads as FREE. This is what `session.ts` fills
- * `CurrentUser.plan` with now that the JWT no longer carries a plan claim.
+ * The tier the account BOUGHT — `control_plane.subscriptions.plan_slug`,
+ * returned verbatim. A COARSE label for display and the upgrade-prompt hint.
  *
- * Removed in commit 3 together with `CurrentUser.plan` itself. Until then this
- * runs on EVERY `getCurrentUser()` call — one extra entitlements query per
- * authenticated request, whether or not the caller reads `plan`. If commit 3
- * slips, that cost is silent. Grep "TRANSITIONAL (B2 step 2·B)".
+ * NOT an access check. "Purchased" and "currently effective" can diverge: a
+ * lapsed paid subscription still reads `"BASIC"` here even though
+ * `resolveEntitlement()` correctly reports it as `subscription_inactive`.
+ * Any caller gating a feature — or deciding what to offer on an upgrade page —
+ * MUST call `resolveEntitlement()` per feature, never this.
+ *
+ * Falls back to `"FREE"` only if the account has no live subscription row at
+ * all (should not happen for a provisioned account).
  */
-export async function resolvePlanSlug(
-  prisma: Pick<PrismaClient, "cpEntitlement">,
+export async function getPurchasedPlanSlug(
+  prisma: Pick<PrismaClient, "cpSubscription">,
   userId: string,
-  now: Date = new Date(),
 ): Promise<"FREE" | "BASIC" | "BUSINESS"> {
-  const ent = await resolveEntitlement(prisma, { accountId: `acct_${userId}`, featureKey: "store_spy.analysis.run" }, now);
-  if (!ent.allowed) return "FREE";
-  if (ent.quota === 100) return "BUSINESS";
-  if (ent.quota === 50) return "BASIC";
-  return "FREE";
+  const sub = await prisma.cpSubscription.findFirst({
+    where: { accountId: `acct_${userId}`, status: { in: ["ACTIVE", "TRIALING"] } },
+    orderBy: { createdAt: "desc" },
+    select: { planSlug: true },
+  });
+  return (sub?.planSlug as "FREE" | "BASIC" | "BUSINESS" | undefined) ?? "FREE";
 }
