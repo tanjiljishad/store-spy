@@ -52,7 +52,7 @@ export default async function StoreIntelligencePage({ params, searchParams }: St
   let analyzed = await hasAnalyzedStore(prisma, user.id, store.id);
   let claimLimitReached = false;
   if (!analyzed && claim === "1") {
-    const result = await recordAnalysisUsage(prisma, user.id, store.id, user.plan);
+    const result = await recordAnalysisUsage(prisma, user.id, store.id);
     if (result.outcome === "limit_reached") {
       claimLimitReached = true;
     } else {

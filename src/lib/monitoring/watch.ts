@@ -1,7 +1,8 @@
 import type { PrismaClient } from "@prisma/client";
-import { monitoringDurationDays, maxActiveMonitoredStores } from "../entitlements/entitlement-service";
+import { monitoringDurationDays } from "../entitlements/entitlement-service";
 import { isUnderLimit } from "../entitlements/plan-limits";
 import type { PlanTier } from "../entitlements/plan-limits";
+import { resolveEntitlement } from "../control-plane/entitlements";
 
 /**
  * The per-user monitoring relationship: starting/stopping a Watchlist row's
@@ -42,24 +43,34 @@ export async function startMonitoring(
       return { outcome: "already_active" as const, expiresAt: existing.monitoringExpiresAt };
     }
 
-    // Milestone 12 §1.4: a FREE user whose 30-day trial has already passed
-    // must be blocked here, before the count check — without this, a user
-    // whose only watch already expired (activeCount back to 0, comfortably
-    // under the limit of 1) could start a brand-new watch that computes
-    // min(freeTrialEndsAt, watchExpiry) below to an ALREADY-PAST date,
-    // creating a watch that's immediately eligible for the very next
-    // expiry sweep instead of genuinely rejecting the request.
+    // B2 2·B (commit 1): the monitoring gate — "may this account monitor, and
+    // up to how many" — now comes from the `store_spy.monitoring.slots`
+    // entitlement. For a FREE account that grant lives on the TRIALING
+    // subscription, so resolveEntitlement() returns `trial_expired` once the
+    // 30-day window is past (exactly the check that used to read
+    // User.freeTrialEndsAt here). Still BEFORE the count check — a user whose
+    // only watch already expired is under the count limit but must still be
+    // rejected outright, not have a new already-past watch created.
+    const ent = await resolveEntitlement(tx, { accountId: `acct_${userId}`, featureKey: "store_spy.monitoring.slots" }, now);
+    if (!ent.allowed) {
+      if (ent.reason === "trial_expired") return { outcome: "trial_expired" as const };
+      // subscription_inactive / no_entitlement — no dedicated UI state; a 0/0
+      // limit_reached is the least-misleading shape the response envelope has.
+      return { outcome: "limit_reached" as const, current: 0, max: 0 };
+    }
+
+    // The per-watch expiry ceiling for a FREE watch is still the user's
+    // freeTrialEndsAt (the sweep mechanism, unchanged in commit 1); only the
+    // GATE above moved to entitlements. Derived from subt_.period_end in a
+    // later commit.
     let freeTrialEndsAt: Date | null = null;
     if (plan === "FREE") {
       const user = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { freeTrialEndsAt: true } });
       freeTrialEndsAt = user.freeTrialEndsAt;
-      if (freeTrialEndsAt !== null && freeTrialEndsAt <= now) {
-        return { outcome: "trial_expired" as const };
-      }
     }
 
     const activeCount = await tx.watchlist.count({ where: { userId, monitoringStatus: "ACTIVE" } });
-    const limit = maxActiveMonitoredStores(plan);
+    const limit = ent.quota;
     if (!isUnderLimit(activeCount, limit)) {
       // isUnderLimit(count, null) is always true, so reaching this branch
       // guarantees limit !== null.

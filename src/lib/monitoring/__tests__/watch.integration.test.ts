@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { expireDueWatches, startMonitoring, stopMonitoring } from "../watch";
 import { clearTrialCeiling } from "../../billing/subscription-sweep";
-import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
+import { expireTrialWindow, makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/test/i.test(url)) throw new Error("Run this destructive suite with npm run test:integration against the test database.");
@@ -62,7 +62,7 @@ describe("monitoring entitlements", () => {
   it("a FREE user whose trial already ended cannot start a NEW watch — rejected with trial_expired, not silently created-then-expired", async () => {
     const account = await user();
     const pastTrialEnd = new Date(NOW.getTime() - 24 * 60 * 60_000); // ended yesterday
-    await prisma.user.update({ where: { id: account.id }, data: { freeTrialEndsAt: pastTrialEnd } });
+    await expireTrialWindow(prisma, account.id, pastTrialEnd);
     const watched = await store();
 
     const result = await startMonitoring(prisma, account.id, watched.id, "FREE", NOW);

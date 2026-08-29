@@ -1,7 +1,21 @@
 import type { PrismaClient } from "@prisma/client";
-import { maxAnalysesPer24h } from "./entitlement-service";
 import { isUnderLimit } from "./plan-limits";
-import type { Limit, PlanTier } from "./plan-limits";
+import type { Limit } from "./plan-limits";
+import { resolveEntitlement } from "../control-plane/entitlements";
+
+/**
+ * B2 step 2·B (commit 1): the rolling-24h analysis quota now comes from the
+ * control plane (`store_spy.analysis.run` entitlement) instead of
+ * `maxAnalysesPer24h(user.plan)`. The COUNTING and the comparison stay here,
+ * under the same advisory lock — the control plane only supplies the ceiling
+ * (see docs/store-spy-control-plane-b2.md B3). `allowed: false` (an inactive
+ * subscription) collapses to a quota of 0, so both the pre-check and the
+ * authoritative gate reject it the same way an over-quota caller is rejected.
+ */
+async function analysisRunQuota(prisma: Pick<PrismaClient, "cpEntitlement">, userId: string): Promise<Limit> {
+  const ent = await resolveEntitlement(prisma, { accountId: `acct_${userId}`, featureKey: "store_spy.analysis.run" });
+  return ent.allowed ? ent.quota : 0;
+}
 
 /**
  * Milestone 12 §1.2: the server-side ledger for "how many analyses has this
@@ -34,7 +48,6 @@ export async function recordAnalysisUsage(
   prisma: PrismaClient,
   userId: string,
   storeId: string,
-  plan: PlanTier,
 ): Promise<RecordAnalysisUsageResult> {
   const windowStart = new Date(Date.now() - WINDOW_HOURS * 60 * 60_000);
 
@@ -55,7 +68,7 @@ export async function recordAnalysisUsage(
       select: { createdAt: true },
       orderBy: { createdAt: "asc" },
     });
-    const max = maxAnalysesPer24h(plan);
+    const max = await analysisRunQuota(tx, userId);
     if (!isUnderLimit(windowRows.length, max)) {
       // The oldest row in the window is the one that determines when a slot
       // frees up next — it falls out of the rolling window exactly WINDOW_HOURS after it was written.
@@ -124,18 +137,18 @@ export async function getAnalysisUsage(
   userId: string,
 ): Promise<{ used: number; limit: Limit; resetsAt: Date | null }> {
   const windowStart = new Date(Date.now() - WINDOW_HOURS * 60 * 60_000);
-  const [rows, user] = await Promise.all([
+  const [rows, limit] = await Promise.all([
     prisma.analysisUsage.findMany({
       where: { userId, createdAt: { gte: windowStart } },
       select: { createdAt: true },
       orderBy: { createdAt: "asc" },
     }),
-    prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { plan: true } }),
+    analysisRunQuota(prisma, userId),
   ]);
   const oldest = rows[0]?.createdAt ?? null;
   return {
     used: rows.length,
-    limit: maxAnalysesPer24h(user.plan),
+    limit,
     resetsAt: oldest ? new Date(oldest.getTime() + WINDOW_HOURS * 60 * 60_000) : null,
   };
 }

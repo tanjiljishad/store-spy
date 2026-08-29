@@ -328,9 +328,16 @@ needs no FK rename. `down.sql` reverses it.
   `jwt-session-refresh.ts` (existence + revocation only; keep the 60s TTL,
   `PLAN_CHECK_TTL_MS` → `SESSION_CHECK_TTL_MS`; keep the `role !== "USER"`
   always-re-read branch per Q2).
-- Gates call `/api/internal/entitlements`; `recordAnalysisUsage()` takes a
-  `quota: number | null` argument instead of `plan`; `plan-limits.ts` /
-  `entitlement-service.ts` deleted.
+- Gates source their ceiling from the control plane. In B2 (repoint-in-place,
+  Q1) they call `resolveEntitlement()` **directly** — the same logic
+  `/api/internal/entitlements` wraps — not over HTTP: an in-process gate
+  hitting its own HTTP route with a shared-secret header to run one indexed
+  query is pure overhead, and the endpoint stays the B4 seam for when the
+  control plane becomes a separate service (that one call site swaps to an
+  HTTP client then). `recordAnalysisUsage()` drops its `plan` argument and
+  reads `store_spy.analysis.run` itself, inside its existing advisory lock;
+  `plan-limits.ts` / `entitlement-service.ts` are deleted once nothing reads
+  `plan` (commit 3).
 - Billing writes drop the `User.plan` half of the dual-write —
   `control_plane` only.
 - Signup + adapter stop writing the shadow `store_spy.User`.

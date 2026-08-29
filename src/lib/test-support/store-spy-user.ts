@@ -74,6 +74,18 @@ export async function makeStoreSpyUser(
  * `MarketingConsent` have none until migration 20260828180000, so a plain
  * `TRUNCATE "User" CASCADE` does not reach them.
  */
+/**
+ * Force a FREE user's monitoring trial to end at `at`, writing BOTH the
+ * legacy `store_spy.User.freeTrialEndsAt` (still the per-watch expiry
+ * mechanism in B2 2·B commit 1) and the `subt_` TRIALING subscription's
+ * `period_end` (what the monitoring gate now reads via resolveEntitlement).
+ * They diverged the moment the gate moved to entitlements — set both.
+ */
+export async function expireTrialWindow(prisma: PrismaClient, userId: string, at: Date): Promise<void> {
+  await prisma.user.update({ where: { id: userId }, data: { freeTrialEndsAt: at } });
+  await prisma.cpSubscription.updateMany({ where: { id: `subt_${userId}` }, data: { periodEnd: at } });
+}
+
 export async function resetControlPlane(prisma: PrismaClient): Promise<void> {
   await prisma.$executeRawUnsafe(
     `TRUNCATE "control_plane"."accounts","store_spy"."UserAdminRole","store_spy"."MarketingConsent" RESTART IDENTITY CASCADE`,

@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
-import { maxActiveMonitoredStores } from "../entitlements/entitlement-service";
 import { getAnalysisUsage } from "../entitlements/analysis-usage";
 import type { Limit, PlanTier } from "../entitlements/plan-limits";
+import { resolveEntitlement } from "../control-plane/entitlements";
 import { daysRemaining } from "../days-remaining";
 
 /**
@@ -47,7 +47,7 @@ export interface DashboardSummary {
 export async function getDashboardSummary(prisma: PrismaClient, userId: string, now: Date = new Date()): Promise<DashboardSummary> {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { email: true, plan: true } });
 
-  const [usage, usageRows] = await Promise.all([
+  const [usage, usageRows, monitorEnt] = await Promise.all([
     getAnalysisUsage(prisma, userId),
     // The AnalysisUsage table is append-only now (Milestone 12 §1.2) — a
     // store re-analyzed on different days has multiple rows. Ordered
@@ -59,6 +59,8 @@ export async function getDashboardSummary(prisma: PrismaClient, userId: string, 
       orderBy: { createdAt: "desc" },
       include: { store: { select: { id: true, domain: true } } },
     }),
+    // B2 2·B (commit 1): monitored-store limit from the control plane.
+    resolveEntitlement(prisma, { accountId: `acct_${userId}`, featureKey: "store_spy.monitoring.slots" }, now),
   ]);
 
   const seenStoreIds = new Set<string>();
@@ -107,7 +109,7 @@ export async function getDashboardSummary(prisma: PrismaClient, userId: string, 
           nextCrawlAt: w.store.tier === "DISABLED" ? null : w.store.nextCrawlAt.toISOString(),
         })),
       slotsUsed: activeWatches.length,
-      slotsLimit: maxActiveMonitoredStores(user.plan),
+      slotsLimit: monitorEnt.quota,
     },
   };
 }
