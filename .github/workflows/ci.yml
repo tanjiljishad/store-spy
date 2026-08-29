@@ -40,6 +40,15 @@ jobs:
           cache: "npm"
 
       - run: npm ci
+
+      # Non-blocking for now: surfaces any new advisory as a visible (yellow)
+      # step failure on the run without blocking merge/deploy. Promote to a
+      # hard gate once the baseline stays clean. Last full sweep: the vitest
+      # 2 -> 4 bump (commit ca6fc49) took `npm audit` to 0.
+      - name: npm audit (report only)
+        run: npm audit
+        continue-on-error: true
+
       - run: npx prisma generate
 
       - run: npm run lint
