@@ -1,0 +1,32 @@
+# Build context excludes. Everything needed for `next build` + `prisma
+# generate` (src/, prisma/, public/, config files, package*.json) stays;
+# everything else is either rebuilt inside the image or irrelevant to it.
+
+node_modules
+.next
+.git
+.gitignore
+
+# Local env — real values must only ever arrive via the runtime environment
+# (compose env_file / Render dashboard), never baked into an image layer.
+.env
+.env.test
+
+# Test-only harness + fixtures — not shipped, and would pull test deps into
+# the trace.
+docker-compose.test.yml
+vitest.config.ts
+vitest.integration.config.ts
+vitest.integration.setup.ts
+**/__tests__
+**/*.test.ts
+**/*.test.tsx
+
+# Docs / meta
+docs
+*.md
+.github
+.vscode
+.claude
+coverage
+tsconfig.tsbuildinfo
