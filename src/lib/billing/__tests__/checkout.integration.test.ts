@@ -24,6 +24,15 @@ beforeEach(async () => {
 async function makeUser() {
   return makeStoreSpyUser(prisma, { plan: "FREE" });
 }
+/** The account's current tier, from the control-plane subscription (B2 2·B — plan is no longer a store_spy.User column). */
+async function currentPlan(userId: string): Promise<string> {
+  const sub = await prisma.cpSubscription.findFirstOrThrow({
+    where: { accountId: `acct_${userId}`, status: { in: ["ACTIVE", "TRIALING"] } },
+    orderBy: { createdAt: "desc" },
+    select: { planSlug: true },
+  });
+  return sub.planSlug!;
+}
 async function makePromo(overrides: Partial<Parameters<typeof prisma.promoCode.create>[0]["data"]> = {}) {
   return prisma.promoCode.create({
     data: {
@@ -47,8 +56,7 @@ describe("processCheckout — the 100%-off path is fully functional with zero pa
 
     expect(result).toEqual({ outcome: "completed_free", plan: "BASIC" });
 
-    const updatedUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updatedUser.plan).toBe("BASIC");
+    expect(await currentPlan(user.id)).toBe("BASIC");
 
     const redemption = await prisma.promoRedemption.findFirstOrThrow({ where: { promoCodeId: promo.id, userId: user.id } });
     expect(redemption.finalCents).toBe(0);
@@ -88,8 +96,7 @@ describe("processCheckout — the 100%-off path is fully functional with zero pa
     const result = await processCheckout(prisma, { userId: user.id, plan: "BASIC", period: "MONTHLY", code: "TOTALLYFAKE" });
     expect(result).toEqual({ outcome: "invalid_promo" });
 
-    const updatedUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updatedUser.plan).toBe("FREE"); // unchanged
+    expect(await currentPlan(user.id)).toBe("FREE"); // unchanged
   });
 
   it("FREE cannot be purchased", async () => {
@@ -116,8 +123,7 @@ describe("processCheckout — no-provider (finalCents > 0) path", () => {
     const redemptionCount = await prisma.promoRedemption.count({ where: { promoCodeId: promo.id } });
     expect(redemptionCount).toBe(0); // never redeemed until payment confirms
 
-    const updatedUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updatedUser.plan).toBe("FREE"); // unchanged
+    expect(await currentPlan(user.id)).toBe("FREE"); // unchanged
   });
 
   it("no-code checkout at full price also creates a PENDING checkout with the full list price", async () => {

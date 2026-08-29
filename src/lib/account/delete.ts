@@ -8,16 +8,18 @@ import type { PrismaClient } from "@prisma/client";
  * tombstone — an audit log that can be erased by its subject is not an
  * audit log."
  *
- * Watchlist/AnalysisUsage/Account/Session/AdminPermissionGrant all cascade
- * automatically on `tx.user.delete()` via their own `onDelete: Cascade`
- * relations (see schema.prisma) — nothing to do for those here. Subscription
- * and Checkout are deliberately NOT FK-related to User anywhere in this
- * schema (so a user's billing history can outlive an unrelated admin
- * action elsewhere — same reasoning family as
- * AdminPermissionGrant.grantedByUserId's own doc comment), which means a
- * plain `user.delete()` would silently leave them dangling instead of
- * removing them. The doc's own scope names exactly these two, so both are
- * deleted explicitly, in the same transaction as the User row itself.
+ * Watchlist / AnalysisUsage / Account / Session / AdminPermissionGrant /
+ * UserAdminRole / MarketingConsent all cascade automatically when the
+ * control-plane account (and with it `control_plane.users`) is deleted —
+ * their `*_userId_fkey` constraints point there with `ON DELETE CASCADE`
+ * (migration 20260828180000). Nothing to do for those here beyond the
+ * `cpAccount.deleteMany` below. Subscription and Checkout are deliberately
+ * NOT FK-related to the user anywhere in this schema (so a user's billing
+ * history can outlive an unrelated admin action elsewhere — same reasoning
+ * family as AdminPermissionGrant.grantedByUserId's own doc comment), which
+ * means the cascade would silently leave them dangling instead of removing
+ * them. The doc's own scope names exactly these two, so both are deleted
+ * explicitly, in the same transaction.
  *
  * PromoRedemption and PromoCode.assignedToUserId/createdByUserId are
  * likewise un-FK'd to User but are NOT in the doc's named scope — left
@@ -66,15 +68,14 @@ export async function deleteOwnAccount(prisma: PrismaClient, userId: string): Pr
     await tx.checkout.deleteMany({ where: { userId } });
     await tx.subscription.deleteMany({ where: { userId } });
 
-    // B2 step 2·A: the control-plane account (cascades control_plane.users +
-    // its subscriptions + entitlements). Account id is `acct_<userId>` by the
-    // provisioning convention. deleteMany so a missing row is a no-op.
+    // B2 2·B: deleting the control-plane account cascades control_plane.users
+    // and, through the *_userId_fkey constraints migration 20260828180000
+    // repointed there (ON DELETE CASCADE), every store_spy child too —
+    // Watchlist / AnalysisUsage / Account / Session / AdminPermissionGrant /
+    // UserAdminRole / MarketingConsent — plus the account's cp subscriptions +
+    // entitlements. Account id is `acct_<userId>`; deleteMany so a missing row
+    // is a no-op.
     await tx.cpAccount.deleteMany({ where: { id: `acct_${userId}` } });
-    // These two tables have no FK to store_spy.User until migration
-    // 20260828180000, so tx.user.delete() below won't cascade them yet —
-    // delete them explicitly for the 2·A window. Harmless (no-op) after M.
-    await tx.userAdminRole.deleteMany({ where: { userId } });
-    await tx.marketingConsent.deleteMany({ where: { userId } });
 
     // Distinct affected rows counted BEFORE either UPDATE — a row can
     // legitimately match both conditions (e.g. checkout.completed_free's
@@ -94,7 +95,10 @@ export async function deleteOwnAccount(prisma: PrismaClient, userId: string): Pr
       data: { targetId: tombstoneUserId(userId) },
     });
 
-    await tx.user.delete({ where: { id: userId } });
+    // Legacy shadow store_spy.User row (only exists for pre-3b accounts;
+    // dropped wholesale in step 4). deleteMany so a new account with no shadow
+    // row is a no-op — the cpAccount delete above already erased everything.
+    await tx.user.deleteMany({ where: { id: userId } });
 
     return { outcome: "deleted", auditRowsTombstoned: affected.length };
   });

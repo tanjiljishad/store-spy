@@ -9,8 +9,8 @@ import type { PlanTier } from "../entitlements/plan-limits";
  * (the signup route and the OAuth adapter's createUser). `syncControlPlanePlan()`
  * rebuilds an existing account's `store-spy` subscriptions + entitlements from
  * a plan value — called by checkout, the subscription sweep, and admin
- * setUserPlan alongside their existing `User.plan` write (B2 step 2·A's
- * dual-write; 2·B drops the `User.plan` half).
+ * setUserPlan. As of B2 2·B commit 3b the control plane is the SOLE store of
+ * plan; there is no `store_spy.User.plan` write alongside these any more.
  *
  * Account id is `acct_<userId>` — same convention the step 1 backfill used, so
  * a caller with only a userId can address the account without a lookup.
@@ -31,53 +31,20 @@ export function trialEndsFromNow(now: Date = new Date()): Date {
 }
 
 type CpTx = Pick<PrismaClient, "cpAccount" | "cpUser" | "cpSubscription" | "cpEntitlement">;
-type CpTxWithUser = CpTx & Pick<PrismaClient, "user">;
 
 /**
- * Make sure the control-plane account (`acct_<userId>` + its `cpUser` row)
- * exists, creating it from the shadow `store_spy.User` row if not. Called at
- * the top of every B2 step 2·A dual-write.
- *
- * In production this is ALWAYS expected to be a no-op: signup and the OAuth
- * adapter both provision the account up front. If it ever actually fires
- * (logged at error), a 2·A dual-write provisioning path failed to run and
- * the control plane was silently inconsistent until this healed it — that is
- * a bug to chase, not a normal event. It exists so the dual-writes converge
- * to a correct control plane even from an inconsistent start (and so
- * integration fixtures that create a bare `store_spy.User` work without
- * replicating the provisioning). Removed in B2 step 2·B with the rest of the
- * dual-write scaffolding.
+ * The monitoring-trial end for an account: its current TRIALING subscription's
+ * `period_end`, or — for an account that has none right now (a paid one being
+ * downgraded) — `cpUser.createdAt + 30d`, the same value the old
+ * `store_spy.User.freeTrialEndsAt` DB default produced. Callers read this
+ * BEFORE syncControlPlanePlan() deletes and rebuilds the subscriptions.
  */
-export async function ensureControlPlaneAccount(tx: CpTxWithUser, userId: string): Promise<void> {
-  const existing = await tx.cpUser.findUnique({ where: { id: userId }, select: { id: true } });
-  if (existing) return;
-
-  const shadow = await tx.user.findUnique({
-    where: { id: userId },
-    select: { email: true, passwordHash: true, name: true, emailVerified: true, tosAcceptedAt: true, freeTrialEndsAt: true },
-  });
-  if (!shadow) throw new Error(`ensureControlPlaneAccount: no store_spy.User row for ${userId}`);
-
-  console.error(
-    `[control-plane] ensureControlPlaneAccount HEALED user ${userId} — no control_plane account existed. ` +
-      `A 2·A dual-write path (signup / OAuth adapter) must have failed to provision it. This should never happen in production.`,
-  );
-
-  const accountId = `acct_${userId}`;
-  await tx.cpAccount.upsert({ where: { id: accountId }, create: { id: accountId, billingEmail: shadow.email }, update: {} });
-  await tx.cpUser.upsert({
-    where: { id: userId },
-    create: {
-      id: userId,
-      accountId,
-      email: shadow.email,
-      passwordHash: shadow.passwordHash,
-      name: shadow.name,
-      emailVerifiedAt: shadow.emailVerified,
-      tosAcceptedAt: shadow.tosAcceptedAt,
-    },
-    update: {},
-  });
+export async function resolveTrialEnd(tx: CpTx, userId: string): Promise<Date> {
+  const [subt, user] = await Promise.all([
+    tx.cpSubscription.findUnique({ where: { id: `subt_${userId}` }, select: { periodEnd: true } }),
+    tx.cpUser.findUniqueOrThrow({ where: { id: userId }, select: { createdAt: true } }),
+  ]);
+  return subt?.periodEnd ?? new Date(user.createdAt.getTime() + FREE_TRIAL_DAYS * 24 * 60 * 60 * 1000);
 }
 
 /**
@@ -136,6 +103,7 @@ export async function provisionStoreSpyAccount(
     email: string;
     passwordHash: string | null;
     name: string | null;
+    image?: string | null;
     emailVerifiedAt: Date | null;
     tosAcceptedAt: Date | null;
     trialEndsAt: Date;
@@ -150,6 +118,7 @@ export async function provisionStoreSpyAccount(
       email: args.email,
       passwordHash: args.passwordHash,
       name: args.name,
+      image: args.image ?? null,
       emailVerifiedAt: args.emailVerifiedAt,
       tosAcceptedAt: args.tosAcceptedAt,
     },
@@ -164,16 +133,15 @@ export async function provisionStoreSpyAccount(
  * `store-spy` subscriptions are dropped and rewritten; other products (none
  * today) are untouched.
  *
- * `trialEndsAt` is only read for `plan === "FREE"` — pass the user's existing
- * `freeTrialEndsAt` on a downgrade so a returning FREE user's trial window is
- * unchanged (usually already past). `paidPeriodEnd` is only read for a paid
- * plan (null = perpetual, e.g. an admin-set plan or a perpetual promo).
+ * `trialEndsAt` is only read for `plan === "FREE"` — pass `resolveTrialEnd()`
+ * on a downgrade so a returning FREE user's trial window is unchanged (usually
+ * already past). `paidPeriodEnd` is only read for a paid plan (null =
+ * perpetual, e.g. an admin-set plan or a perpetual promo).
  */
 export async function syncControlPlanePlan(
-  tx: CpTxWithUser,
+  tx: CpTx,
   args: { userId: string; plan: PlanTier; trialEndsAt: Date | null; paidPeriodEnd: Date | null },
 ): Promise<void> {
-  await ensureControlPlaneAccount(tx, args.userId);
   const accountId = `acct_${args.userId}`;
   // entitlements cascade on subscription delete (entitlements_subscription_id_fkey ON DELETE CASCADE).
   await tx.cpSubscription.deleteMany({ where: { accountId, productId: STORE_SPY_PRODUCT_ID } });

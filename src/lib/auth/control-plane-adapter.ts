@@ -8,12 +8,9 @@ import { provisionStoreSpyAccount, trialEndsFromNow } from "../control-plane/pro
  * The Auth.js adapter. Wraps `@auth/prisma-adapter` for the `Account` /
  * `Session` / `VerificationToken` plumbing (still `store_spy` tables) but
  * routes every USER read and write to `control_plane.users` — that is the
- * account of record (B2 2·B).
- *
- * TRANSITIONAL (B2 step 2·B commit 3): createUser/updateUser also write a
- * shadow `store_spy.User` row so the non-auth `store_spy.User` readers
- * (dashboard label, account/export, consent gates) keep working until they
- * are repointed. Commit 3 removes those writes. Grep "TRANSITIONAL (B2 step 2·B)".
+ * account of record (B2 2·B). As of commit 3b it no longer writes a shadow
+ * `store_spy.User` row; createUser still seeds the per-product
+ * `store_spy.MarketingConsent` row.
  */
 export function controlPlaneAdapter(prisma: PrismaClient): Adapter {
   const base = PrismaAdapter(prisma);
@@ -38,53 +35,37 @@ export function controlPlaneAdapter(prisma: PrismaClient): Adapter {
       const image = user.image ?? null;
       const emailVerifiedAt = user.emailVerified ?? null;
 
-      const created = await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx) => {
         await provisionStoreSpyAccount(tx, {
           userId: id,
           email,
           passwordHash: null, // OAuth-only user
           name,
+          image,
           emailVerifiedAt,
           tosAcceptedAt: null, // set later by the /welcome interstitial
           trialEndsAt: trialEndsFromNow(),
         });
-        // TRANSITIONAL (B2 step 2·B): shadow store_spy.User row + its consent
-        // row. OAuth users start with consent=false; the /welcome interstitial
-        // may flip it via grantMarketingConsent().
-        const shadow = await tx.user.create({
-          data: { id, email, name, image, emailVerified: emailVerifiedAt, plan: "FREE", role: "USER", freeTrialEndsAt: trialEndsFromNow() },
-        });
+        // OAuth users start with consent=false; the /welcome interstitial may
+        // flip it via grantMarketingConsent().
         await tx.marketingConsent.create({ data: { userId: id, consent: false } });
-        return shadow;
       });
 
-      return toAdapterUser(created);
+      return { id, email, name, image, emailVerified: emailVerifiedAt };
     },
 
     async updateUser({ id, ...data }) {
       const cpData: Record<string, unknown> = {};
-      const ssData: Record<string, unknown> = {};
-      if (data.email !== undefined) {
-        cpData.email = data.email;
-        ssData.email = data.email;
-      }
-      if (data.name !== undefined) {
-        cpData.name = data.name;
-        ssData.name = data.name;
-      }
-      if (data.image !== undefined) ssData.image = data.image; // control_plane.users has no image column reader; keep it on the shadow row
-      if (data.emailVerified !== undefined) {
-        cpData.emailVerifiedAt = data.emailVerified;
-        ssData.emailVerified = data.emailVerified;
-      }
+      if (data.email !== undefined) cpData.email = data.email;
+      if (data.name !== undefined) cpData.name = data.name;
+      if (data.image !== undefined) cpData.image = data.image;
+      if (data.emailVerified !== undefined) cpData.emailVerifiedAt = data.emailVerified;
 
-      const updated = await prisma.$transaction(async (tx) => {
-        if (Object.keys(cpData).length > 0) await tx.cpUser.updateMany({ where: { id }, data: cpData });
-        // TRANSITIONAL (B2 step 2·B): keep the shadow store_spy.User row in step.
-        return tx.user.update({ where: { id }, data: ssData });
-      });
+      if (Object.keys(cpData).length > 0) await prisma.cpUser.updateMany({ where: { id }, data: cpData });
 
-      return toAdapterUser(updated);
+      const fresh = await cpUserToAdapter(prisma, { id });
+      if (!fresh) throw new Error(`updateUser: no control_plane.users row for ${id}`);
+      return fresh;
     },
   };
 }

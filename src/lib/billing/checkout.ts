@@ -89,13 +89,10 @@ export async function processCheckout(prisma: PrismaClient, req: CheckoutRequest
         });
       }
 
-      // TRANSITIONAL (B2 step 2·B): the User.plan write. B2 step 2·A keeps it
-      // alongside the control-plane write below (syncControlPlanePlan); 2·B
-      // drops this line and lets the control plane be the sole source of plan.
-      await tx.user.update({ where: { id: req.userId }, data: { plan } });
       // Milestone 12 §1.4: lifts any FREE-trial expiry ceiling from the
       // user's existing watches now that they've actually paid (or redeemed
-      // a 100%-off promo) for a plan that carries none.
+      // a 100%-off promo) for a plan that carries none. The plan itself is
+      // written to the control plane only (syncControlPlanePlan, below).
       await clearTrialCeiling(tx, req.userId);
 
       // The Subscription's expiry follows the redeemed promo's own

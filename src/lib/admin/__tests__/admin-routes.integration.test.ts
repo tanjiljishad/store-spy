@@ -148,8 +148,8 @@ describe("PATCH /api/admin/users/[id]/plan", () => {
     const res = await patchPlan(req("/x", { method: "PATCH", body: JSON.stringify({ plan: "BASIC" }) }), ctx(target.id));
     expect(res.status).toBe(200);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: target.id } });
-    expect(updated.plan).toBe("BASIC");
+    const sub = await prisma.cpSubscription.findFirstOrThrow({ where: { accountId: `acct_${target.id}`, status: "ACTIVE" }, select: { planSlug: true } });
+    expect(sub.planSlug).toBe("BASIC");
     const auditRows = await prisma.adminAuditLog.count({ where: { targetId: target.id, action: "user.plan.update" } });
     expect(auditRows).toBe(1);
   });
@@ -173,7 +173,7 @@ describe("POST /api/admin/users/[id]/revoke-sessions", () => {
     const res = await revokeSessions(req("/x", { method: "POST" }), ctx(target.id));
     expect(res.status).toBe(200);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: target.id } });
+    const updated = await prisma.cpUser.findUniqueOrThrow({ where: { id: target.id } });
     expect(updated.sessionsValidAfter).not.toBeNull();
     const auditRows = await prisma.adminAuditLog.count({ where: { targetId: target.id, action: "user.sessions.revoke" } });
     expect(auditRows).toBe(1);

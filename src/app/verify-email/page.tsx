@@ -32,9 +32,6 @@ export default async function VerifyEmailPage({ searchParams }: VerifyEmailPageP
     if (valid && !alreadyVerified) {
       const verifiedAt = new Date();
       await prisma.cpUser.updateMany({ where: { id: uid }, data: { emailVerifiedAt: verifiedAt } });
-      // TRANSITIONAL (B2 step 2·B): the shadow store_spy.User write. 3a repointed
-      // every emailVerified reader to control_plane.users; 3b drops this line.
-      await prisma.user.update({ where: { id: uid }, data: { emailVerified: verifiedAt } });
     }
 
     // Idempotent — re-clicking an already-used link is a harmless no-op

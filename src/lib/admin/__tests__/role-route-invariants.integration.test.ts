@@ -90,8 +90,7 @@ describe("PATCH /api/admin/users/[id]/role — privilege-escalation invariants",
     const res = await patchAs(admin, admin.id, { role: "SUPPORT_ADMIN" });
 
     expect(res.status).toBe(403);
-    const stillRole = await prisma.user.findUniqueOrThrow({ where: { id: admin.id } });
-    expect(stillRole.role).toBe("SUPER_ADMIN");
+    expect((await prisma.userAdminRole.findUnique({ where: { userId: admin.id } }))?.role).toBe("SUPER_ADMIN");
   });
 
   it("2. an actor lacking user:role:write cannot grant any role at all (generic permission gate, not a hardcoded role name)", async () => {
@@ -101,8 +100,8 @@ describe("PATCH /api/admin/users/[id]/role — privilege-escalation invariants",
     const res = await patchAs(actor, target.id, { role: "OPS_ADMIN" });
 
     expect(res.status).toBe(403);
-    const stillUser = await prisma.user.findUniqueOrThrow({ where: { id: target.id } });
-    expect(stillUser.role).toBe("USER");
+    // "USER" == no store_spy.UserAdminRole row.
+    expect(await prisma.userAdminRole.findUnique({ where: { userId: target.id } })).toBeNull();
   });
 
   it("3. the last remaining SUPER_ADMIN cannot be demoted — even under a genuine concurrent race", async () => {
@@ -124,7 +123,7 @@ describe("PATCH /api/admin/users/[id]/role — privilege-escalation invariants",
     const statuses = [resAtoB.status, resBtoA.status].sort();
     expect(statuses).toEqual([200, 403]); // exactly one succeeds, one is rejected
 
-    const remainingSuperAdmins = await prisma.user.count({ where: { role: "SUPER_ADMIN" } });
+    const remainingSuperAdmins = await prisma.userAdminRole.count({ where: { role: "SUPER_ADMIN" } });
     expect(remainingSuperAdmins).toBe(1); // never zero
   });
 
@@ -135,7 +134,7 @@ describe("PATCH /api/admin/users/[id]/role — privilege-escalation invariants",
     const res = await patchAs(actor, target.id, { role: "SUPER_ADMIN" });
 
     expect(res.status).toBe(403);
-    const stillUser = await prisma.user.findUniqueOrThrow({ where: { id: target.id } });
-    expect(stillUser.role).toBe("USER");
+    // "USER" == no store_spy.UserAdminRole row.
+    expect(await prisma.userAdminRole.findUnique({ where: { userId: target.id } })).toBeNull();
   });
 });

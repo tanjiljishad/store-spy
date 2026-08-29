@@ -43,10 +43,6 @@ export async function recordOAuthWelcomeConsent(
   args: RecordOAuthWelcomeConsentArgs,
   now: Date = new Date(),
 ): Promise<void> {
-  // TRANSITIONAL (B2 step 2·B): the store_spy.User.tosAcceptedAt write. 2·A
-  // keeps it next to the control_plane.users write; 2·B drops the shadow half
-  // and repoints needsConsentInterstitial() to control_plane.users.
-  await prisma.user.update({ where: { id: userId }, data: { tosAcceptedAt: now } });
   await prisma.cpUser.updateMany({ where: { id: userId }, data: { tosAcceptedAt: now } });
   if (args.marketingConsent) {
     await grantMarketingConsent(prisma, userId, OAUTH_WELCOME_CONSENT_SOURCE, now);

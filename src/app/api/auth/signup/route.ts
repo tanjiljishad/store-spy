@@ -102,23 +102,9 @@ export async function POST(req: NextRequest) {
         tosAcceptedAt: now,
         trialEndsAt,
       });
-      // TRANSITIONAL (B2 step 2·B): shadow store_spy.User row so the
-      // *_userId_fkey constraints (still -> store_spy.User until migration
-      // 20260828180000) and the still-live User.plan / User.marketingConsent
-      // readers keep working. 2·B deletes this write.
-      await tx.user.create({
-        data: {
-          id: userId,
-          email,
-          passwordHash,
-          name,
-          tosAcceptedAt: now,
-          freeTrialEndsAt: trialEndsAt,
-          plan: "FREE",
-          role: "USER",
-          ...(marketingConsent ? { marketingConsent: true, marketingConsentAt: now, marketingConsentSource: SIGNUP_FORM_CONSENT_SOURCE } : {}),
-        },
-      });
+      // Marketing consent is per-product (store_spy.MarketingConsent). Bundled
+      // into this same transaction, never a follow-up update — see the §4.2
+      // reasoning in the route header.
       await tx.marketingConsent.create({
         data: marketingConsent
           ? { userId, consent: true, consentAt: now, consentSource: SIGNUP_FORM_CONSENT_SOURCE }

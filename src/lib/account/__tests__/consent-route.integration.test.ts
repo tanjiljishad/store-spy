@@ -68,7 +68,7 @@ describe("POST /api/account/consent", () => {
     const explicitFalse = await postConsent(req({ tosAccepted: false }));
     expect(explicitFalse.status).toBe(400);
 
-    const stillPending = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const stillPending = await prisma.cpUser.findUniqueOrThrow({ where: { id: user.id } });
     expect(stillPending.tosAcceptedAt).toBeNull();
   });
 
@@ -79,9 +79,9 @@ describe("POST /api/account/consent", () => {
     const res = await postConsent(req({ tosAccepted: true }));
     expect(res.status).toBe(200);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const updated = await prisma.cpUser.findUniqueOrThrow({ where: { id: user.id } });
     expect(updated.tosAcceptedAt).not.toBeNull();
-    expect(updated.marketingConsent).toBe(false);
+    expect((await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } })).consent).toBe(false);
   });
 
   it("with tosAccepted true and marketingConsent true, grants marketing consent with the oauth source", async () => {
@@ -91,8 +91,8 @@ describe("POST /api/account/consent", () => {
     const res = await postConsent(req({ tosAccepted: true, marketingConsent: true }));
     expect(res.status).toBe(200);
 
-    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(updated.marketingConsent).toBe(true);
-    expect(updated.marketingConsentSource).toBe("oauth_welcome_interstitial");
+    const updated = await prisma.marketingConsent.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(updated.consent).toBe(true);
+    expect(updated.consentSource).toBe("oauth_welcome_interstitial");
   });
 });
