@@ -1,0 +1,70 @@
+# The full application stack — Postgres + the web server + the scheduler worker,
+# all from the ONE image the Dockerfile produces. This is for local
+# production-parity and self-hosting; the real deployment pulls the CI-built
+# image from GHCR and is described by render.yaml + docs/staging-deployment.md.
+#
+#   cp .env.example .env      # then fill in real values
+#   docker compose up --build
+#
+# No Redis / no queue — rate limiting is in-process, per the Milestone 8
+# architecture decision (see render.yaml's header). The "control plane" is the
+# `control_plane` schema in this same Postgres, not a separate service.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: store_spy
+      # Event headlines contain → and — (significance.ts / engine.ts). Pin the
+      # cluster encoding rather than trusting the host locale — same reason as
+      # docker-compose.test.yml.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      # 5432 — no clash with docker-compose.test.yml's 5433.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d store_spy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build: .
+    command: ["web"] # migrate deploy, then `node server.js`
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # Override the .env DATABASE_URL to reach the compose Postgres by service
+      # name. The search_path form is mandatory (app tables live in store_spy);
+      # `?schema=` must NOT be present — see docs/environment-variables.md.
+      DATABASE_URL: "postgresql://app:${POSTGRES_PASSWORD:-app}@postgres:5432/store_spy?options=-c%20search_path%3Dstore_spy%2Cpublic"
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    healthcheck:
+      # Node 22 has a global fetch; the runner image has no curl/wget. The
+      # entrypoint runs `migrate deploy` before `node server.js`, so once this
+      # passes the schema is guaranteed present — that's what the worker waits on.
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  worker:
+    build: .
+    command: ["worker"] # scheduler cycle; never runs migrations
+    depends_on:
+      web:
+        condition: service_healthy # web's health = server up AND migrations applied
+    env_file: .env
+    environment:
+      DATABASE_URL: "postgresql://app:${POSTGRES_PASSWORD:-app}@postgres:5432/store_spy?options=-c%20search_path%3Dstore_spy%2Cpublic"
+
+volumes:
+  pgdata:
