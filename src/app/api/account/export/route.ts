@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
-import { requireUser, UnauthorizedError } from "@/lib/auth/session";
+import { requireVerifiedUser, UnauthorizedError, EmailNotVerifiedError } from "@/lib/auth/session";
 import { exportOwnAccountData } from "@/lib/account/export";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 
@@ -11,9 +11,12 @@ const RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 export async function GET() {
   let actor;
   try {
-    actor = await requireUser();
+    actor = await requireVerifiedUser();
   } catch (e) {
     if (e instanceof UnauthorizedError) return Response.json({ error: "Unauthorized" }, { status: 401 });
+    if (e instanceof EmailNotVerifiedError) {
+      return Response.json({ error: "Verify your email first — check your inbox for the confirmation link." }, { status: 403 });
+    }
     throw e;
   }
 

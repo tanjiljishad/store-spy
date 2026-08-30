@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { canonicalizeDomain } from "@/lib/crawl/shopify";
 import { checkRateLimit, getClientIp } from "@/lib/security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
+import { needsEmailVerification } from "@/lib/account/email-verification";
 import { startMonitoring, stopMonitoring } from "@/lib/monitoring/watch";
 import { limitReached } from "@/lib/entitlements/limit-reached";
 import { getPurchasedPlanSlug } from "@/lib/control-plane/entitlements";
@@ -31,6 +32,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ dom
   const user = await getCurrentUser();
   if (!user) {
     return Response.json({ error: "Sign in to monitor a store." }, { status: 401 });
+  }
+  // Audit fix M-3: no starting monitoring on an unverified account.
+  if (await needsEmailVerification(prisma, user.id)) {
+    return Response.json(
+      { error: "Verify your email first — check your inbox for the confirmation link." },
+      { status: 403 },
+    );
   }
 
   const { domain: rawDomain } = await params;

@@ -49,6 +49,12 @@ const getCurrentUserMock = vi.fn<() => Promise<{ id: string; email: string } | n
 vi.mock("@/lib/auth/session", () => ({
   getCurrentUser: () => getCurrentUserMock(),
 }));
+// Audit fix M-3: the authenticated path now checks email verification.
+// Default: verified. One test below flips it.
+const needsEmailVerificationMock = vi.fn(async () => false);
+vi.mock("@/lib/account/email-verification", () => ({
+  needsEmailVerification: (...args: unknown[]) => needsEmailVerificationMock(...(args as [])),
+}));
 vi.mock("@/lib/db/prisma", () => ({ prisma: {} }));
 // The route fetches a coarse plan label for the LIMIT_REACHED envelope; this
 // suite is about routing / SSE lifecycle, so stub it.
@@ -63,6 +69,8 @@ beforeEach(() => {
   runAnonymousProbeMock.mockClear();
   getCurrentUserMock.mockClear();
   getCurrentUserMock.mockResolvedValue({ id: "user-1", email: "user@example.com" });
+  needsEmailVerificationMock.mockClear();
+  needsEmailVerificationMock.mockResolvedValue(false);
   releaseSecondEvent = null;
 });
 
@@ -144,6 +152,18 @@ describe("POST /api/analyze — authenticated vs. anonymous routing (Milestone 1
     expect(res.status).toBe(200);
     expect(runAnonymousProbeMock).toHaveBeenCalledTimes(1);
     expect(runAnalysisMock).not.toHaveBeenCalled();
+  });
+
+  // Audit fix M-3: a signed-in but unverified account is rejected before any
+  // crawl runs — the anonymous path stays open for genuinely-anonymous callers.
+  it("a signed-in but UNVERIFIED caller gets 403, and neither orchestrator runs", async () => {
+    needsEmailVerificationMock.mockResolvedValue(true);
+
+    const res = await POST(req());
+
+    expect(res.status).toBe(403);
+    expect(runAnalysisMock).not.toHaveBeenCalled();
+    expect(runAnonymousProbeMock).not.toHaveBeenCalled();
   });
 
   it("passes the anonymous caller's turnstileToken from the request body through to runAnonymousProbe", async () => {

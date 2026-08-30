@@ -18,7 +18,14 @@ vi.mock("@/lib/auth/session", () => {
       this.name = "UnauthorizedError";
     }
   }
-  return { requireUser: vi.fn(), UnauthorizedError };
+  class EmailNotVerifiedError extends Error {
+    constructor() {
+      super("Email not verified");
+      this.name = "EmailNotVerifiedError";
+    }
+  }
+  // Audit fix M-3: the route now goes through requireVerifiedUser().
+  return { requireVerifiedUser: vi.fn(), UnauthorizedError, EmailNotVerifiedError };
 });
 vi.mock("@/lib/db/prisma", () => ({ prisma: {} }));
 const processCheckoutMock = vi.fn(async () => ({ outcome: "pending" as const, checkoutId: "co_1", finalCents: 1900 }));
@@ -27,7 +34,7 @@ vi.mock("@/lib/billing/checkout", () => ({
 }));
 
 const { POST } = await import("../route");
-const { requireUser } = await import("@/lib/auth/session");
+const { requireVerifiedUser } = await import("@/lib/auth/session");
 const { _resetRateLimitState } = await import("@/lib/security/rate-limit");
 
 function actor(id: string) {
@@ -45,8 +52,8 @@ function req(body: Record<string, unknown> = {}): NextRequest {
 beforeEach(() => {
   _resetRateLimitState();
   processCheckoutMock.mockClear();
-  vi.mocked(requireUser).mockReset();
-  vi.mocked(requireUser).mockResolvedValue(actor("user-1"));
+  vi.mocked(requireVerifiedUser).mockReset();
+  vi.mocked(requireVerifiedUser).mockResolvedValue(actor("user-1"));
 });
 
 describe("POST /api/billing/checkout — promo brute-force channel (security review fix 4)", () => {
@@ -79,13 +86,13 @@ describe("POST /api/billing/checkout — promo brute-force channel (security rev
   });
 
   it("a different user's code-guessing does not throttle this user's checkout", async () => {
-    vi.mocked(requireUser).mockResolvedValue(actor("attacker"));
+    vi.mocked(requireVerifiedUser).mockResolvedValue(actor("attacker"));
     for (let i = 0; i < 10; i++) {
       await POST(req({ code: `GUESS${i}` }));
     }
     expect((await POST(req({ code: "GUESS10" }))).status).toBe(429); // attacker's budget confirmed exhausted
 
-    vi.mocked(requireUser).mockResolvedValue(actor("victim"));
+    vi.mocked(requireVerifiedUser).mockResolvedValue(actor("victim"));
     const victimReq = await POST(req({ code: "REALCODE" }));
     expect(victimReq.status).not.toBe(429);
   });

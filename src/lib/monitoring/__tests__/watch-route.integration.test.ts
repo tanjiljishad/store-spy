@@ -60,8 +60,14 @@ function req(path: string, body?: unknown): NextRequest {
 async function makeStore() {
   return prisma.store.create({ data: { domain: `${randomUUID().slice(0, 8)}.com`, platform: "SHOPIFY" } });
 }
-async function makeUser(plan: "FREE" | "BASIC" | "BUSINESS" = "FREE") {
-  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, plan });
+async function makeUser(plan: "FREE" | "BASIC" | "BUSINESS" = "FREE", verified = true) {
+  return makeStoreSpyUser(prisma, {
+    email: `${randomUUID()}@example.com`,
+    plan,
+    // Audit fix M-3: the watch route now rejects unverified accounts, so the
+    // default here is verified; the 403 test below opts out.
+    emailVerified: verified ? new Date() : null,
+  });
 }
 
 describe("POST /api/store/[domain]/watch", () => {
@@ -78,6 +84,17 @@ describe("POST /api/store/[domain]/watch", () => {
 
     const res = await watchPost(req("/api/store/never-seen.com/watch"), { params: Promise.resolve({ domain: "never-seen.com" }) });
     expect(res.status).toBe(404);
+  });
+
+  // Audit fix M-3: a signed-in but unverified account cannot start monitoring.
+  it("403s a signed-in but unverified account, before any store lookup", async () => {
+    const user = await makeUser("FREE", /* verified */ false);
+    mockGetCurrentUser.mockResolvedValue({ id: user.id, email: user.email, plan: "FREE" });
+    const store = await makeStore();
+
+    const res = await watchPost(req(`/api/store/${store.domain}/watch`), { params: Promise.resolve({ domain: store.domain }) });
+    expect(res.status).toBe(403);
+    expect(await prisma.watchlist.count()).toBe(0);
   });
 
   it("starts monitoring for a real signed-in user", async () => {

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Session is mocked at the getCurrentUser seam (the real module pulls in
+// next-auth, which doesn't resolve under vitest ESM). requireUser /
+// requireVerifiedUser are re-implemented here to MATCH the real ones —
+// requireVerifiedUser (audit fix M-3) runs the same needsEmailVerification()
+// check against the real test DB, so the checkout gate is genuinely exercised.
+const { mockGetCurrentUser } = vi.hoisted(() => ({ mockGetCurrentUser: vi.fn() }));
 vi.mock("@/lib/auth/session", () => {
   class UnauthorizedError extends Error {
     constructor() {
@@ -13,13 +19,25 @@ vi.mock("@/lib/auth/session", () => {
       this.name = "ForbiddenError";
     }
   }
-  const getCurrentUser = vi.fn();
+  class EmailNotVerifiedError extends Error {
+    constructor() {
+      super("Email not verified");
+      this.name = "EmailNotVerifiedError";
+    }
+  }
   const requireUser = async () => {
-    const user = await getCurrentUser();
+    const user = await mockGetCurrentUser();
     if (!user) throw new UnauthorizedError();
     return user;
   };
-  return { getCurrentUser, requireUser, UnauthorizedError, ForbiddenError };
+  const requireVerifiedUser = async () => {
+    const user = await requireUser();
+    const { prisma } = await import("@/lib/db/prisma");
+    const { needsEmailVerification } = await import("@/lib/account/email-verification");
+    if (await needsEmailVerification(prisma, user.id)) throw new EmailNotVerifiedError();
+    return user;
+  };
+  return { getCurrentUser: mockGetCurrentUser, requireUser, requireVerifiedUser, UnauthorizedError, ForbiddenError, EmailNotVerifiedError };
 });
 
 import { PrismaClient } from "@prisma/client";
@@ -31,7 +49,6 @@ import { GET as listPromos, POST as createPromo } from "../../../app/api/admin/p
 import { POST as assignPromo } from "../../../app/api/admin/promos/[id]/assign/route";
 import { POST as revokePromo } from "../../../app/api/admin/promos/[id]/revoke/route";
 import { _resetRateLimitState } from "../../security/rate-limit";
-import { getCurrentUser } from "@/lib/auth/session";
 import { makeStoreSpyUser, resetControlPlane } from "../../test-support/store-spy-user";
 
 const url = process.env.DATABASE_URL;
@@ -51,11 +68,16 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  vi.mocked(getCurrentUser).mockReset();
+  mockGetCurrentUser.mockReset();
 });
 
-async function makeUser(role: "USER" | "SUPER_ADMIN" | "BILLING_ADMIN" = "USER") {
-  return makeStoreSpyUser(prisma, { email: `${randomUUID()}@example.com`, role });
+async function makeUser(role: "USER" | "SUPER_ADMIN" | "BILLING_ADMIN" = "USER", verified = true) {
+  // Audit fix M-3: POST /api/billing/checkout now requires a verified email.
+  return makeStoreSpyUser(prisma, {
+    email: `${randomUUID()}@example.com`,
+    role,
+    emailVerified: verified ? new Date() : null,
+  });
 }
 /** The account's current tier, from the control-plane subscription (B2 2·B). */
 async function currentPlan(userId: string): Promise<string> {
@@ -67,7 +89,7 @@ async function currentPlan(userId: string): Promise<string> {
   return sub.planSlug!;
 }
 function signInAs(user: { id: string; email: string; role: string }) {
-  vi.mocked(getCurrentUser).mockResolvedValue({ id: user.id, email: user.email, role: user.role as never });
+  mockGetCurrentUser.mockResolvedValue({ id: user.id, email: user.email, role: user.role as never });
 }
 function req(url2: string, body?: unknown) {
   return new NextRequest(`http://localhost${url2}`, {
@@ -82,7 +104,7 @@ function ctx(id: string) {
 
 describe("POST /api/billing/promo/validate", () => {
   it("401s an anonymous caller", async () => {
-    vi.mocked(getCurrentUser).mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
     const res = await validatePromo(req("/api/billing/promo/validate", { plan: "BASIC", period: "MONTHLY", code: "X" }));
     expect(res.status).toBe(401);
   });
@@ -131,9 +153,17 @@ describe("POST /api/billing/promo/validate", () => {
 
 describe("POST /api/billing/checkout", () => {
   it("401s an anonymous caller", async () => {
-    vi.mocked(getCurrentUser).mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
     const res = await checkout(req("/api/billing/checkout", { plan: "BASIC", period: "MONTHLY" }));
     expect(res.status).toBe(401);
+  });
+
+  // Audit fix M-3: an unverified signed-in account cannot check out.
+  it("403s a signed-in but unverified account", async () => {
+    const user = await makeUser("USER", /* verified */ false);
+    signInAs(user);
+    const res = await checkout(req("/api/billing/checkout", { plan: "BASIC", period: "MONTHLY" }));
+    expect(res.status).toBe(403);
   });
 
   it("a 100% code completes checkout and grants the plan for real, over HTTP", async () => {

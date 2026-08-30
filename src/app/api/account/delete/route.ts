@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { requireUser, UnauthorizedError } from "@/lib/auth/session";
+import { requireVerifiedUser, UnauthorizedError, EmailNotVerifiedError } from "@/lib/auth/session";
 import { deleteOwnAccount } from "@/lib/account/delete";
 import { normalizeEmail } from "@/lib/auth/normalize-email";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -19,9 +19,12 @@ const RATE_LIMIT = { limit: 5, windowMs: 60_000 };
 export async function POST(req: NextRequest) {
   let actor;
   try {
-    actor = await requireUser();
+    actor = await requireVerifiedUser();
   } catch (e) {
     if (e instanceof UnauthorizedError) return Response.json({ error: "Unauthorized" }, { status: 401 });
+    if (e instanceof EmailNotVerifiedError) {
+      return Response.json({ error: "Verify your email first — check your inbox for the confirmation link." }, { status: 403 });
+    }
     throw e;
   }
 

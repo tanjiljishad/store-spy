@@ -4,6 +4,7 @@ import { runAnalysis } from "@/lib/analysis/run-analysis";
 import { runAnonymousProbe } from "@/lib/analysis/anonymous-probe";
 import { checkRateLimit, getClientIp } from "@/lib/security/rate-limit";
 import { getCurrentUser } from "@/lib/auth/session";
+import { needsEmailVerification } from "@/lib/account/email-verification";
 import { getPurchasedPlanSlug } from "@/lib/control-plane/entitlements";
 import type { AnalysisSseEvent } from "@/lib/analysis/types";
 
@@ -87,6 +88,17 @@ export async function POST(req: NextRequest) {
         onEvent: send,
         hourlyCeiling: anonymousCrawlHourlyCeiling(),
       }),
+    );
+  }
+
+  // Audit fix M-3: a signed-in but unverified account must not run a full
+  // authenticated crawl — the dashboard layout redirects such an account to
+  // /verify-email, but a direct fetch() to this route bypassed that. The
+  // anonymous path above (Turnstile + 3/24h quota) stays open.
+  if (await needsEmailVerification(prisma, user.id)) {
+    return Response.json(
+      { error: "Verify your email first — check your inbox for the confirmation link." },
+      { status: 403 },
     );
   }
 
