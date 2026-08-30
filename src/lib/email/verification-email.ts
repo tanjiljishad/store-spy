@@ -8,9 +8,9 @@ import { sendEmail } from "./resend-client";
  * Audit fix M-2: this used to take `baseUrl` from `req.nextUrl.origin` at the
  * signup / resend-verification routes. `Host` is attacker-controlled, so a
  * signup for `victim@example.com` sent with `Host: attacker.tld` produced a
- * confirmation link pointing at the attacker — and the token is a
- * deterministic HMAC (see email-verification-token.ts), so a captured link
- * stayed valid. Pinning to `APP_URL` removes the request from the equation.
+ * confirmation link pointing at the attacker. Pinning to `APP_URL` removes the
+ * request from the equation. (The token itself is now time-bounded too — see
+ * email-verification-token.ts, audit fix M-4.)
  *
  * Fail-closed, same posture as EMAIL_VERIFICATION_TOKEN_SECRET: an unset or
  * malformed `APP_URL` yields `null` (no link, no email) rather than a link

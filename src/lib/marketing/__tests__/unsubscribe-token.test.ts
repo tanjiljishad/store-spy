@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { generateUnsubscribeToken, verifyUnsubscribeToken } from "../unsubscribe-token";
+import { UNSUBSCRIBE_TOKEN_MAX_AGE_MS, generateUnsubscribeToken, verifyUnsubscribeToken } from "../unsubscribe-token";
 
 describe("unsubscribe token", () => {
   const originalSecret = process.env.UNSUBSCRIBE_TOKEN_SECRET;
@@ -23,8 +23,22 @@ describe("unsubscribe token", () => {
     expect(verifyUnsubscribeToken("user-2", token)).toBe(false);
   });
 
-  it("is deterministic — the same user id always produces the same token under the same secret", () => {
-    expect(generateUnsubscribeToken("user-1")).toBe(generateUnsubscribeToken("user-1"));
+  // Audit fix M-4: no longer a bare deterministic HMAC — the token carries a
+  // signed issued-at time and lapses after a generous window.
+  it("is time-bounded — verifies inside the 90-day window, rejects once it has lapsed", () => {
+    const t0 = 1_700_000_000_000;
+    const token = generateUnsubscribeToken("user-1", t0)!;
+
+    expect(verifyUnsubscribeToken("user-1", token, t0)).toBe(true);
+    expect(verifyUnsubscribeToken("user-1", token, t0 + UNSUBSCRIBE_TOKEN_MAX_AGE_MS - 1)).toBe(true);
+    expect(verifyUnsubscribeToken("user-1", token, t0 + UNSUBSCRIBE_TOKEN_MAX_AGE_MS + 1_000)).toBe(false);
+  });
+
+  it("rejects a token whose issued-at timestamp has been tampered", () => {
+    const t0 = 1_700_000_000_000;
+    const token = generateUnsubscribeToken("user-1", t0)!;
+    const [v, , mac] = token.split(".");
+    expect(verifyUnsubscribeToken("user-1", `${v}.${t0 + UNSUBSCRIBE_TOKEN_MAX_AGE_MS * 5}.${mac}`, t0)).toBe(false);
   });
 
   it("a token minted under one secret does not verify under a different secret", () => {

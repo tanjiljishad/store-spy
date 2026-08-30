@@ -1,43 +1,38 @@
-import { createHmac } from "node:crypto";
-import { constantTimeEqual } from "../security/constant-time-equal";
+import { createSignedToken, verifySignedToken } from "../security/signed-token";
 
 /**
- * Milestone 12 §4.1: "UnsubscribeToken per user (or an HMAC of the user id
- * with a dedicated secret), giving a one-click unsubscribe that requires no
- * login." Chose the HMAC form, not a stored-token table: no email SENDER
- * exists anywhere in this codebase yet (M12's own doc lists "transactional
- * or marketing email sending" as explicitly out of scope — only consent
- * capture and the unsubscribe MECHANISM are in scope this phase), so
- * there's nothing that would ever need to look up or revoke an individual
- * token row; a stateless, deterministic HMAC is strictly simpler and has no
- * table to prune. `verifyUnsubscribeToken()` is what `GET /unsubscribe`
- * checks — see that page for the no-login flow.
+ * Milestone 12 §4.1: a one-click, no-login unsubscribe link. Stateless (no
+ * stored-token table — nothing sends marketing email yet, so there is nothing
+ * that would need to look one up or revoke it) but TIME-BOUNDED — see
+ * security/signed-token.ts.
  *
- * `UNSUBSCRIBE_TOKEN_SECRET` is a DEDICATED secret, not AUTH_SECRET reused —
- * same "unique per environment, never shared" reasoning as AUTH_SECRET
- * itself: a leaked unsubscribe link should never also compromise session
- * signing, and vice versa. Fails CLOSED the same way turnstile.ts and
- * SCHEDULER_SECRET do: an unset secret makes every token invalid rather
- * than silently trusting an unsigned request.
+ * Audit fix M-4: this was a bare deterministic HMAC of the user id with no
+ * expiry. It now carries a signed issued-at time and lapses after
+ * UNSUBSCRIBE_TOKEN_MAX_AGE_MS. The window is deliberately generous — an
+ * opt-out link should keep working for a good while — and `/unsubscribe`
+ * already shows a "sign in and update your preferences" fallback when a link
+ * no longer verifies.
+ *
+ * `UNSUBSCRIBE_TOKEN_SECRET` is a DEDICATED secret, never AUTH_SECRET reused.
+ * Fails CLOSED: an unset secret makes every token invalid.
  */
+
+/** 90 days — an unsubscribe link on an old email should still work; a lapsed one falls through to the signed-in preferences page. */
+export const UNSUBSCRIBE_TOKEN_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 
 function getSecret(): string | null {
   return process.env.UNSUBSCRIBE_TOKEN_SECRET ?? null;
 }
 
-function computeHmac(userId: string, secret: string): string {
-  return createHmac("sha256", secret).update(userId, "utf8").digest("hex");
-}
-
 /** Null if `UNSUBSCRIBE_TOKEN_SECRET` is unset — callers must treat that as "cannot mint a working link," not silently emit a token nothing can ever verify. */
-export function generateUnsubscribeToken(userId: string): string | null {
+export function generateUnsubscribeToken(userId: string, now: number = Date.now()): string | null {
   const secret = getSecret();
   if (!secret) return null;
-  return computeHmac(userId, secret);
+  return createSignedToken(secret, userId, now);
 }
 
-export function verifyUnsubscribeToken(userId: string, token: string | null | undefined): boolean {
+export function verifyUnsubscribeToken(userId: string, token: string | null | undefined, now: number = Date.now()): boolean {
   const secret = getSecret();
   if (!secret || !token) return false;
-  return constantTimeEqual(computeHmac(userId, secret), token);
+  return verifySignedToken(secret, userId, token, UNSUBSCRIBE_TOKEN_MAX_AGE_MS, now);
 }

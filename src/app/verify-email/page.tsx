@@ -60,7 +60,7 @@ export default async function VerifyEmailPage({ searchParams }: VerifyEmailPageP
           <>
             <h1 className="mb-2 font-display text-2xl font-bold tracking-tight">Link no longer valid</h1>
             <p className="font-mono text-[13px] text-muted-dim">
-              This confirmation link is invalid. Sign in and request a new one from there.
+              This confirmation link is invalid or has expired. Sign in and request a new one from there.
             </p>
           </>
         )}

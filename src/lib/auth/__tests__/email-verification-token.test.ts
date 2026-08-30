@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { generateEmailVerificationToken, verifyEmailVerificationToken } from "../email-verification-token";
+import {
+  EMAIL_VERIFICATION_TOKEN_MAX_AGE_MS,
+  generateEmailVerificationToken,
+  verifyEmailVerificationToken,
+} from "../email-verification-token";
 
 describe("email verification token", () => {
   const originalSecret = process.env.EMAIL_VERIFICATION_TOKEN_SECRET;
@@ -28,8 +32,27 @@ describe("email verification token", () => {
     expect(verifyEmailVerificationToken("user-1", "new@example.com", token)).toBe(false);
   });
 
-  it("is deterministic — the same user id + email always produces the same token under the same secret", () => {
-    expect(generateEmailVerificationToken("user-1", "a@example.com")).toBe(generateEmailVerificationToken("user-1", "a@example.com"));
+  // Audit fix M-4: no longer a bare deterministic HMAC — the token carries a
+  // signed issued-at time, so it is time-bounded and two mints differ.
+  it("is time-bounded — verifies inside the TTL, rejects once it has lapsed", () => {
+    const t0 = 1_700_000_000_000;
+    const token = generateEmailVerificationToken("user-1", "a@example.com", t0)!;
+
+    expect(verifyEmailVerificationToken("user-1", "a@example.com", token, t0)).toBe(true);
+    expect(verifyEmailVerificationToken("user-1", "a@example.com", token, t0 + EMAIL_VERIFICATION_TOKEN_MAX_AGE_MS - 1)).toBe(true);
+    expect(verifyEmailVerificationToken("user-1", "a@example.com", token, t0 + EMAIL_VERIFICATION_TOKEN_MAX_AGE_MS + 1_000)).toBe(false);
+  });
+
+  it("rejects a token whose issued-at timestamp has been tampered to extend its life", () => {
+    const t0 = 1_700_000_000_000;
+    const token = generateEmailVerificationToken("user-1", "a@example.com", t0)!;
+    const [v, , mac] = token.split(".");
+    const forged = `${v}.${t0 + EMAIL_VERIFICATION_TOKEN_MAX_AGE_MS * 10}.${mac}`;
+    expect(verifyEmailVerificationToken("user-1", "a@example.com", forged, t0)).toBe(false);
+  });
+
+  it("rejects a legacy bare-hex token shape outright", () => {
+    expect(verifyEmailVerificationToken("user-1", "a@example.com", "a".repeat(64))).toBe(false);
   });
 
   it("a token minted under one secret does not verify under a different secret", () => {

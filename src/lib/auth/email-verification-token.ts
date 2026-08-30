@@ -1,38 +1,46 @@
-import { createHmac } from "node:crypto";
-import { constantTimeEqual } from "../security/constant-time-equal";
+import { createSignedToken, verifySignedToken } from "../security/signed-token";
 
 /**
- * Same stateless-HMAC design as marketing/unsubscribe-token.ts: no stored-
- * token table, since a deterministic HMAC needs nothing to look up or prune.
- * Bound to `${userId}:${email}`, not just the user id — the unsubscribe
- * token can get away with id-only because there is no account-email-change
- * feature to worry about invalidating; this one includes the email so that,
- * if an email-change feature is ever added, a token minted for the old
- * address stops verifying instead of silently re-confirming a different one.
+ * The email-confirmation link's token. Stateless (no stored-token table) but
+ * TIME-BOUNDED — see security/signed-token.ts. Bound to `${userId}:${email}`,
+ * not just the user id, so a token minted for one address stops verifying if
+ * that account's email is ever changed.
  *
- * `EMAIL_VERIFICATION_TOKEN_SECRET` is a DEDICATED secret — same "unique per
- * environment, never shared, never AUTH_SECRET reused" reasoning as
- * UNSUBSCRIBE_TOKEN_SECRET. Fails CLOSED: an unset secret makes every token
- * invalid rather than silently trusting an unsigned request.
+ * Audit fix M-4: this was a bare deterministic HMAC with no expiry — a link
+ * that leaked stayed valid forever. It now carries a signed issued-at time and
+ * lapses after EMAIL_VERIFICATION_TOKEN_MAX_AGE_MS; `/verify-email` shows a
+ * resend form when a link no longer verifies.
+ *
+ * `EMAIL_VERIFICATION_TOKEN_SECRET` is a DEDICATED secret — never AUTH_SECRET
+ * or UNSUBSCRIBE_TOKEN_SECRET reused. Fails CLOSED: an unset secret makes every
+ * token invalid rather than trusting an unsigned request.
  */
+
+/** 72h — long enough to click a link from an email over a weekend; a lapsed link is recoverable via the /verify-email resend form. */
+export const EMAIL_VERIFICATION_TOKEN_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 
 function getSecret(): string | null {
   return process.env.EMAIL_VERIFICATION_TOKEN_SECRET ?? null;
 }
 
-function computeHmac(userId: string, email: string, secret: string): string {
-  return createHmac("sha256", secret).update(`${userId}:${email}`, "utf8").digest("hex");
+function payloadFor(userId: string, email: string): string {
+  return `${userId}:${email}`;
 }
 
 /** Null if `EMAIL_VERIFICATION_TOKEN_SECRET` is unset — callers must treat that as "cannot mint a working link," not silently emit a token nothing can ever verify. */
-export function generateEmailVerificationToken(userId: string, email: string): string | null {
+export function generateEmailVerificationToken(userId: string, email: string, now: number = Date.now()): string | null {
   const secret = getSecret();
   if (!secret) return null;
-  return computeHmac(userId, email, secret);
+  return createSignedToken(secret, payloadFor(userId, email), now);
 }
 
-export function verifyEmailVerificationToken(userId: string, email: string, token: string | null | undefined): boolean {
+export function verifyEmailVerificationToken(
+  userId: string,
+  email: string,
+  token: string | null | undefined,
+  now: number = Date.now(),
+): boolean {
   const secret = getSecret();
   if (!secret || !token) return false;
-  return constantTimeEqual(computeHmac(userId, email, secret), token);
+  return verifySignedToken(secret, payloadFor(userId, email), token, EMAIL_VERIFICATION_TOKEN_MAX_AGE_MS, now);
 }
